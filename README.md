@@ -1,2 +1,107 @@
-# lumigen
-Simplify and accelerate your data engineering. Lumigen is a configuration-driven ETL framework that lets you build entire data pipelines in one YAML file.
+# Lumigen: Declarative ETL Framework
+
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Python Version](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+
+**Lumigen is a powerful, configuration-driven ETL framework designed to simplify and accelerate data pipeline development. Define your entire data flow—from source to sink—in a single, expressive YAML file and let Lumigen handle the execution.**
+
+Whether you're moving data between databases, processing streams from Kafka, or transforming files, Lumigen provides a unified interface to connect, transform, and load your data with minimal code.
+
+## Key Features
+
+*   **Declarative Pipelines:** Define complex ETL jobs in a single, easy-to-read YAML file. No boilerplate code required.
+*   **Extensible Connectors:** Out-of-the-box support for popular data sources and sinks like Oracle, PostgreSQL, MySQL, Kafka, and more.
+*   **Pluggable Execution Engines:** Run your jobs using the best engine for the task. Lumigen supports:
+    *   **Standard Python:** For lightweight, single-node processing.
+    *   **Apache Spark:** For large-scale distributed data processing.
+    *   **Apache SeaTunnel:** For high-performance data integration between a vast array of sources.
+*   **Powerful Transformations:** Apply a chain of transformations to your data in-flight. Use built-in transformers (XML/JSON parsing, SQL) or easily add your own.
+*   **Configuration-First:** All aspects of the job, from database credentials and Spark settings to transformation logic, are managed in one place.
+
+## How It Works
+
+Lumigen abstracts the entire ETL process into three main stages, all defined in your configuration file:
+
+1.  **Read:** Lumigen connects to your specified `source` (database, message queue, file system) and begins reading data.
+2.  **Transform:** The data is passed through a `transformation_pipeline` where each step modifies the data in sequence. This could be anything from parsing JSON to executing complex SQL queries with UDFs.
+3.  **Write:** The final, transformed data is loaded into your `sink`, with support for various save modes like `overwrite`, `append`, and `merge`.
+
+Lumigen intelligently selects the right backend runner (Python, Spark, or SeaTunnel) based on your configuration, ensuring optimal performance and resource utilization.
+
+## Example
+
+Here is an example that reads from a PostgreSQL table, transforms the data using SQL to create a new column, and writes the result to a new table.
+
+*For more examples, see the `config-examples/` directory.*
+
+```yaml
+source:
+  type: postgres
+  host: localhost
+  port: 5432
+  database: pagila
+  user: postgres
+  password: ********
+
+sink:
+  type: postgres
+  host: localhost
+  port: 5432
+  database: postgres
+  user: postgres
+  password: ********
+
+executor:
+  type: spark
+  app_name: process_actors_table
+
+transformation_pipeline:
+  - SQL:
+      query: "SELECT actor_id, CONCAT(UPPER(first_name), ' ', UPPER(last_name)) AS full_name, last_update FROM dual"
+
+job_properties:
+  source_table: public.actor
+  sink_table: public.actor_transformed
+  data_save_mode: OVERWRITE
+```
+
+## Getting Started
+
+### Prerequisites
+
+*   Python 3.9+
+*   An execution engine environment configured (e.g., local Python with Pandas, or access to a Spark cluster with `SPARK_HOME` set).
+*   For SeaTunnel, `SEATUNNEL_HOME` must be set.
+
+### Installation
+
+1.  Clone the repository:
+    ```bash
+    git clone https://github.com/newluminous/lumigen.git
+    cd lumigen
+    ```
+
+2.  Install the required dependencies:
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+3.  Set up your environment. Create a `.env` file to store secrets and environment-specific variables:
+    ```dotenv
+    # .env
+    SPARK_HOME=/path/to/your/spark-x.x.x-bin-hadoop3
+    ```
+
+### Running a Job
+
+With your configuration file and `.env` file in place, running a job is as simple as:
+
+```bash
+python entry_points/app.py -c /path/to/your/config.yaml
+```
+
+Lumigen will parse the config, select the appropriate runner, and execute the job.
+
+## License
+
+Lumigen is licensed under the [Apache License 2.0](LICENSE).

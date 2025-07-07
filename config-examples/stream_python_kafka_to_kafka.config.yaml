@@ -1,0 +1,16 @@
+source:
+  type: kafka
+  bootstrap.servers: "localhost:9092"
+  group.id: TRANSACTION
+  starting_mode: earliest
+
+sink:
+  type: kafka
+  bootstrap.servers: "localhost:9092"
+  group.id: TRANSACTION
+
+job_properties:
+  source_topic: SOURCE.TRANSACTION
+  source_batch_size: 10
+  sink_topic: COPY.TRANSACTION
+  data_save_mode: OVERWRITE

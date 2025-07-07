@@ -1,0 +1,21 @@
+source:
+  type: postgres
+  host: localhost
+  port: 5432
+  database: pagila
+  user: postgres
+  password: postgres
+
+sink:
+  type: postgres
+  host: localhost
+  port: 5432
+  database: postgres
+  user: postgres
+  password: postgres
+
+job_properties:
+  source_table: public.film
+  source_batch_size: 100
+  sink_table: public.film
+  data_save_mode: OVERWRITE

@@ -1,0 +1,52 @@
+source:
+  type: fake
+  num_row: 50
+  schema_type: [
+    {
+      name: name,
+      fake_type: name,
+    },
+    {
+      name: dob,
+      fake_type: date_of_birth,
+      minimum_age: 18,
+    },
+    {
+      name: phone,
+      fake_type: random_number,
+      digits: 9,
+      fix_len: True,
+    },
+    {
+      name: unix_time,
+      fake_type: unix_time,
+    },
+    {
+      name: coordinate,
+      fake_type: coordinate,
+    },
+    {
+      name: quotes,
+      fake_type: texts,
+      nb_texts: 2,
+      max_nb_chars: 40,
+    },
+    {
+      name: cv_file,
+      fake_type: zip,
+      uncompressed_size: 16,
+      min_file_size: 4,
+    }
+  ]
+
+sink:
+  type: console
+  print_limit_per_batch: 100
+  print_delay: 1
+
+transformation_pipeline:
+  - CurrentTimestamp:
+      as_column: created_at
+
+job_properties:
+  source_batch_size: 5

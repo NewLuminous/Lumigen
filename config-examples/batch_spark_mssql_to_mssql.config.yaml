@@ -1,0 +1,27 @@
+source:
+  type: mssql
+  host: localhost
+  port: 1433
+  database: northwind
+  user: sa
+  password: ********
+
+sink:
+  type: mssql
+  host: localhost
+  port: 1433
+  database: master
+  user: sa
+  password: ********
+
+executor:
+  type: spark
+  app_name: batch Employees
+  config:
+    spark.scheduler.mode: FAIR
+
+job_properties:
+  source_table: dbo.Employees
+  source_batch_size: 5
+  sink_table: dbo.Employees
+  data_save_mode: OVERWRITE

@@ -1,0 +1,70 @@
+"""Contains MSSQLEngineAdapter."""
+
+import typing as t
+
+from sqlglot import exp
+import sqlmesh
+from sqlmesh.core.engine_adapter.shared import (
+    DataObject,
+    DataObjectType,
+)
+
+from core.engine_adapter.mixins import EngineAdapterMixin, FetchBatchMixin
+
+
+class MSSQLEngineAdapter(
+    sqlmesh.core.engine_adapter.mssql.MSSQLEngineAdapter,
+    EngineAdapterMixin,
+    FetchBatchMixin,
+):
+    def _convert_df_datetime(self, df, columns_to_types: t.Dict[str, exp.DataType]) -> None:
+        super()._convert_df_datetime(df, columns_to_types)
+
+        for column, kind in columns_to_types.items():
+            # pymssql.Connection.bulk_copy() doesn't work with nvarchar, so load into varbinary column and cast to nvarchar in SELECT statement.
+            # Reference: https://github.com/pymssql/pymssql/issues/725#issuecomment-2067618289
+            if kind.is_type(exp.DataType.Type.NVARCHAR):
+                df[column] = df[column].apply(lambda s: s.encode("UTF-16LE") if s is not None else s)
+                columns_to_types[column] = exp.DataType.build("VARBINARY(MAX)")
+
+            # Use varbinary intead of binary for temporary table.
+            if kind.is_type(exp.DataType.Type.BINARY):
+                columns_to_types[column] = exp.DataType.build("VARBINARY(MAX)")
+
+    def get_all_data_objects(self, keyword: str="") -> t.List[DataObject]:
+        keyword = keyword.strip()
+        if '.' in keyword:
+            schema = keyword.split('.')[0]
+            table = '.'.join(keyword.split('.')[1:])
+            schema_pattern = f"%{schema}" if schema else None
+            table_pattern = f"{table}%" if table else None
+        else:
+            schema_pattern = None
+            table_pattern = f"%{keyword}%" if keyword else None
+
+        catalog = self.get_current_catalog()
+        query = (
+            exp.select(
+                exp.column("TABLE_NAME").as_("name"),
+                exp.column("TABLE_SCHEMA").as_("schema_name"),
+                exp.case()
+                .when(exp.column("TABLE_TYPE").eq("BASE TABLE"), exp.Literal.string("TABLE"))
+                .else_(exp.column("TABLE_TYPE"))
+                .as_("type"),
+            )
+            .from_(exp.table_("TABLES", db="INFORMATION_SCHEMA"))
+        )
+        if table_pattern:
+            query = query.where(exp.column("TABLE_NAME").ilike(table_pattern))
+        if schema_pattern:
+            query = query.where(exp.column("TABLE_SCHEMA").ilike(schema_pattern))
+        dataframe = self.fetchdf(query)
+        return [
+            DataObject(
+                catalog=catalog,  # type: ignore
+                schema=row.schema_name,  # type: ignore
+                name=row.name,  # type: ignore
+                type=DataObjectType.from_str(row.type),  # type: ignore
+            )
+            for row in dataframe.itertuples()
+        ]

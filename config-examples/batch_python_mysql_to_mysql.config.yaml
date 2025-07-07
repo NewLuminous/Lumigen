@@ -1,0 +1,21 @@
+source:
+  type: mysql
+  host: localhost
+  port: 3306
+  database: sakila
+  user: root
+  password: ********
+
+sink:
+  type: mysql
+  host: localhost
+  port: 3306
+  database: mysql
+  user: root
+  password: ********
+
+job_properties:
+  source_table: sakila.staff
+  source_batch_size: 100
+  sink_table: mysql.staff
+  data_save_mode: OVERWRITE

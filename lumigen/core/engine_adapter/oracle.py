@@ -1,0 +1,375 @@
+"""Contains OracleEngineAdapter."""
+
+from __future__ import annotations
+
+import typing as t
+
+from sqlglot import exp
+from sqlglot.errors import ParseError
+import numpy as np
+import pandas as pd
+
+from sqlmesh.core.dialect import to_schema
+from sqlmesh.core.engine_adapter.base import EngineAdapterWithIndexSupport, MERGE_SOURCE_ALIAS, MERGE_TARGET_ALIAS
+from sqlmesh.core.engine_adapter.mixins import (
+    PandasNativeFetchDFSupportMixin,
+    RowDiffMixin,
+)
+from sqlmesh.core.engine_adapter.shared import (
+    CommentCreationTable,
+    CommentCreationView,
+    DataObject,
+    DataObjectType,
+    SourceQuery,
+    InsertOverwriteStrategy,
+    set_catalog,
+)
+from sqlmesh.core.schema_diff import SchemaDiffer
+
+if t.TYPE_CHECKING:
+    from sqlmesh.core._typing import SchemaName, TableName
+    from sqlmesh.core.engine_adapter.base import QueryOrDF, DF
+
+from core.engine_adapter.mixins import EngineAdapterMixin, FetchBatchMixin
+from utils.dataset import DataFrameConverter
+
+
+@set_catalog()
+class OracleEngineAdapter(
+    EngineAdapterWithIndexSupport,
+    EngineAdapterMixin,
+    PandasNativeFetchDFSupportMixin,
+    RowDiffMixin,
+    FetchBatchMixin,
+):
+    DIALECT: str = "oracle"
+    COMMENT_CREATION_TABLE = CommentCreationTable.COMMENT_COMMAND_ONLY
+    COMMENT_CREATION_VIEW = CommentCreationView.COMMENT_COMMAND_ONLY
+    MAX_TABLE_COMMENT_LENGTH = 4000
+    MAX_COLUMN_COMMENT_LENGTH = 4000
+    SUPPORTS_MATERIALIZED_VIEWS = True
+    SUPPORTS_MATERIALIZED_VIEW_SCHEMA = False
+    SUPPORTS_REPLACE_TABLE = False
+    SCHEMA_DIFFER = SchemaDiffer(
+        parameterized_type_defaults={
+            exp.DataType.build("VARCHAR2", dialect=DIALECT).this: [(1,)],
+            exp.DataType.build("NVARCHAR2", dialect=DIALECT).this: [(1,)],
+            exp.DataType.build("NUMBER", dialect=DIALECT).this: [(38, 127), (0,)],
+            exp.DataType.build("FLOAT", dialect=DIALECT).this: [(126,)],
+            exp.DataType.build("TIMESTAMP", dialect=DIALECT).this: [(6,)],
+            #exp.DataType.build("RAW", dialect=DIALECT).this: [(2000,)],
+            #exp.DataType.build("UROWID", dialect=DIALECT).this: [(4000,)],
+            exp.DataType.build("CHAR", dialect=DIALECT).this: [(1,)],
+            exp.DataType.build("NCHAR", dialect=DIALECT).this: [(1,)],
+        },
+        max_parameter_length={
+            exp.DataType.build("VARCHAR2", dialect=DIALECT).this: 4000,
+            exp.DataType.build("NVARCHAR2", dialect=DIALECT).this: 4000,
+            #exp.DataType.build("RAW", dialect=DIALECT).this: 2000,
+            #exp.DataType.build("UROWID", dialect=DIALECT).this: 4000,
+            exp.DataType.build("CHAR", dialect=DIALECT).this: 2000,
+            exp.DataType.build("NCHAR", dialect=DIALECT).this: 2000,
+        },
+    )
+    VARIABLE_LENGTH_DATA_TYPES = {"VARCHAR2", "NVARCHAR2", "CHAR", "NCHAR"}
+
+    def columns(
+        self,
+        table_name: TableName,
+        include_pseudo_columns: bool = True,
+    ) -> t.Dict[str, exp.DataType]:
+        """Fetches column names and types for the target table."""
+
+        table = exp.to_table(table_name)
+
+        sql = (
+            exp.select(
+                "column_name",
+                "data_type",
+                "data_length",
+                "data_precision",
+                "data_scale",
+            )
+            .from_("all_tab_columns")
+            .where(f"table_name = '{table.name}'")
+        )
+        database_name = table.db
+        if database_name:
+            sql = sql.where(f"owner = '{database_name}'")
+
+        columns_raw = self.fetchall(sql, quote_identifiers=False)
+
+        def build_var_length_col(
+            column_name: str,
+            data_type: str,
+            data_length: t.Optional[int] = None,
+            data_precision: t.Optional[int] = None,
+            data_scale: t.Optional[int] = None,
+        ) -> tuple:
+            data_type = data_type.upper()
+            if (
+                data_type in self.VARIABLE_LENGTH_DATA_TYPES
+                and data_length is not None
+                and data_length > 0
+            ):
+                return (column_name, f"{data_type}({data_length})")
+            if data_type in ["NUMBER", "FLOAT"]:
+                dtype_with_params = f"{data_type}"
+                if data_precision is not None:
+                    dtype_with_params += f"({data_precision}"
+                    if data_scale is not None:
+                        dtype_with_params += f", {data_scale}"
+                    dtype_with_params += ')'
+                return (column_name, dtype_with_params)
+
+            return (column_name, data_type)
+
+        columns = [build_var_length_col(*row) for row in columns_raw]
+        column_dtype_mapping = {}
+        for column_name, data_type in columns:
+            try:
+                column_dtype = exp.DataType.build(data_type, dialect=self.dialect)
+            except ParseError:
+                column_dtype = exp.DataType.build(data_type, dialect=self.dialect, udt=True)
+            column_dtype_mapping[column_name] = column_dtype
+
+        return column_dtype_mapping
+    
+    def table_exists(self, table_name: TableName) -> bool:
+        table = exp.to_table(table_name)
+
+        sql = (
+            exp.select("1")
+            .from_("all_tab_columns")
+            .where(f"table_name = '{table.alias_or_name}'")
+        )
+        database_name = table.db
+        if database_name:
+            sql = sql.where(f"owner = '{database_name}'")
+
+        result = self.fetchone(sql, quote_identifiers=False)
+
+        return result[0] == 1 if result is not None else False
+    
+    def replace_query(
+        self,
+        table_name: TableName,
+        query_or_df: QueryOrDF,
+        columns_to_types: t.Optional[t.Dict[str, exp.DataType]] = None,
+        table_description: t.Optional[str] = None,
+        column_descriptions: t.Optional[t.Dict[str, str]] = None,
+        **kwargs: t.Any,
+    ) -> None:
+        """Replaces an existing table with a query.
+
+        Args:
+            table_name: The name of the table (eg. prod.table)
+            query_or_df: The SQL query to run or a dataframe.
+            columns_to_types: Optional a mapping between the column name and its data type.
+            kwargs: Optional create table properties.
+        """
+        if isinstance(query_or_df, (exp.Query, exp.DerivedTable, str)):
+            super().replace_query(table_name, query_or_df, columns_to_types, table_description, column_descriptions, **kwargs)
+            return
+        
+        target_table = exp.to_table(table_name)
+        target_table = f"{target_table.sql(dialect=self.dialect, identify=True)}"
+        if not self.table_exists(target_table):
+            _, columns_to_types = self._get_source_queries_and_columns_to_types(
+                query_or_df, columns_to_types, target_table=target_table
+            )
+            columns_to_types = columns_to_types or self.columns(target_table)
+            casted_columns = [
+                exp.alias_(
+                    exp.cast(exp.null(), to=kind if not kind.is_type(exp.DataType.Type.TEXT) else "VARCHAR2(4000)"),
+                    column, copy=False
+                ) for column, kind in columns_to_types.items()
+            ]
+            select_schema_exp = exp.select(*casted_columns).from_(exp.to_table("DUAL"), copy=False).where(exp.condition("0=1"), copy=False)
+            create_table_exp = self._build_create_table_exp(target_table, expression=select_schema_exp, exists=False, replace=False)
+
+        insert_statement = self._build_insert_stmt(target_table, query_or_df.columns)
+        df = DataFrameConverter.to_records(query_or_df)
+        with self.transaction():
+            if not self.table_exists(target_table):
+                self.cursor.execute(self._to_sql(create_table_exp))
+            else:
+                self.cursor.execute(f"TRUNCATE TABLE {target_table}")
+            self.cursor.executemany(insert_statement, df)
+
+    def insert_append(
+        self,
+        table_name: TableName,
+        query_or_df: QueryOrDF,
+        columns_to_types: t.Optional[t.Dict[str, exp.DataType]] = None,
+    ) -> None:
+        if isinstance(query_or_df, (exp.Query, exp.DerivedTable, str)):
+            super().insert_append(table_name, query_or_df, columns_to_types)
+            return
+        
+        target_table = exp.to_table(table_name)
+        target_table = f"{target_table.sql(dialect=self.dialect, identify=True)}"
+
+        insert_statement = self._build_insert_stmt(target_table, query_or_df.columns)
+        df = DataFrameConverter.to_records(query_or_df)
+        with self.transaction():
+            self.cursor.executemany(insert_statement, df)
+
+    def merge(
+        self,
+        target_table: TableName,
+        source_table: QueryOrDF,
+        columns_to_types: t.Optional[t.Dict[str, exp.DataType]],
+        unique_key: t.Sequence[exp.Expression],
+        when_matched: t.Optional[exp.Whens] = None,
+        merge_filter: t.Optional[exp.Expression] = None,
+    ) -> None:
+        if isinstance(source_table, (exp.Query, exp.DerivedTable, str)):
+            super().merge(target_table, source_table, columns_to_types, unique_key, when_matched, merge_filter)
+            return
+        
+        target_table = exp.to_table(target_table)
+        target_table = f"{target_table.sql(dialect=self.dialect, identify=True)}"
+        _, columns_to_types = self._get_source_queries_and_columns_to_types(
+            source_table, columns_to_types, target_table=target_table
+        )
+        columns_to_types = columns_to_types or self.columns(target_table)
+        unique_key = [self._to_sql(k, quote=False) for k in unique_key]
+
+        on = exp.and_(
+            *(
+                exp.parse_identifier(part).eq(exp.parse_identifier(f":{part}"))
+                for part in unique_key
+            )
+        )
+        if merge_filter:
+            on = exp.and_(merge_filter, on)
+        on = "(" + self._to_sql(on, quote=False) + ")"
+
+        if not when_matched:
+            when_matched = exp.Whens()
+            when_matched.append(
+                "expressions",
+                exp.When(
+                    matched=True,
+                    source=False,
+                    then=exp.Update(
+                        expressions=[
+                            exp.parse_identifier(col).eq(exp.parse_identifier(f":{col}"))
+                            for col in columns_to_types if col not in unique_key
+                        ],
+                    ),
+                ),
+            )
+        else:
+            for node in when_matched.find_all(exp.Column):
+                if node.table == MERGE_TARGET_ALIAS:
+                    node.replace(exp.column(node.this))
+                elif node.table == MERGE_SOURCE_ALIAS:
+                    node.replace(exp.parse_identifier(f":{node.this}"))
+            condition = False
+            for node in when_matched.find_all(exp.When):
+                condition = node.args.get("condition", False)
+                node.args["condition"] = False
+            if condition is not False:
+                for node in when_matched.find_all(exp.Update):
+                    node.replace(self._to_sql(node.where(condition), quote=False))
+
+        when_not_matched = exp.When(
+            matched=False,
+            source=False,
+            then=exp.Insert(
+                this=exp.Tuple(expressions=[exp.column(col) for col in columns_to_types]),
+                expression=exp.Tuple(
+                    expressions=[exp.parse_identifier(f":{col}") for col in columns_to_types]
+                ),
+            ),
+        )
+        when_matched.append("expressions", when_not_matched)
+        merge_exp = exp.Merge(this=exp.to_table(target_table), using="DUAL", on=on, whens=when_matched)
+        merge_statement = self._to_sql(merge_exp, quote=False)
+        df = DataFrameConverter.to_records(source_table)
+        with self.transaction():
+            self.cursor.executemany(merge_statement, df)
+    
+    def _get_data_objects(
+        self, schema_name: SchemaName, object_names: t.Optional[t.Set[str]] = None
+    ) -> t.List[DataObject]:
+        """
+        Returns all the data objects that exist in the given schema.
+        """
+        query = (
+            exp.select(
+                exp.column("object_name").as_("name"),
+                exp.column("owner").as_("schema_name"),
+                exp.column("object_type").as_("type"),
+            )
+            .from_(exp.table_("all_objects"))
+            .where(exp.column("owner").eq(to_schema(schema_name).db))
+        )
+        if object_names:
+            query = query.where(exp.column("object_name").isin(*object_names))
+        df = self.fetchdf(query)
+        return [
+            DataObject(
+                schema=row.SCHEMA_NAME,
+                name=row.NAME,
+                type=DataObjectType.from_str(row.TYPE.replace(' ', '_')),  # type: ignore
+            )
+            for row in df.itertuples()
+        ]
+    
+    def get_all_data_objects(self, keyword: str="") -> t.List[DataObject]:
+        keyword = keyword.strip()
+        if '.' in keyword:
+            schema = keyword.split('.')[0]
+            table = '.'.join(keyword.split('.')[1:])
+            schema_pattern = f"%{schema}" if schema else None
+            table_pattern = f"{table}%" if table else None
+        else:
+            schema_pattern = None
+            table_pattern = f"%{keyword}%" if keyword else None
+
+        query = (
+            exp.select(
+                exp.column("object_name").as_("name"),
+                exp.column("owner").as_("schema_name"),
+                exp.column("object_type").as_("type"),
+            )
+            .from_(exp.table_("all_objects"))
+        )
+        if table_pattern:
+            query = query.where(exp.column("object_name").ilike(table_pattern))
+        if schema_pattern:
+            query = query.where(exp.column("owner").ilike(schema_pattern))
+        df = self.fetchdf(query)
+        return [
+            DataObject(
+                schema=row.SCHEMA_NAME,
+                name=row.NAME,
+                type=DataObjectType.from_str(row.TYPE.replace(' ', '_')),  # type: ignore
+            )
+            for row in df.itertuples()
+        ]
+    
+    def _insert_overwrite_by_condition(
+        self,
+        table_name: TableName,
+        source_queries: t.List[SourceQuery],
+        columns_to_types: t.Optional[t.Dict[str, exp.DataType]] = None,
+        where: t.Optional[exp.Condition] = None,
+        insert_overwrite_strategy_override: t.Optional[InsertOverwriteStrategy] = None,
+        **kwargs: t.Any,
+    ) -> None:
+        super()._insert_overwrite_by_condition(table_name, source_queries, columns_to_types, where or exp.condition("1=1"), insert_overwrite_strategy_override, **kwargs)
+
+    def ping(self) -> None:
+        try:
+            self.connection.ping()
+        finally:
+            self._connection_pool.close()
+    
+    def _build_insert_stmt(self, table_name: TableName, columns: t.List[str]) -> str:
+        columns = list(columns)
+        insert_exp = exp.insert("VALUES("+','.join(f":{c}" for c in columns)+")", table_name, columns=columns, copy=False)
+        return self._to_sql(insert_exp, quote=False)

@@ -1,0 +1,24 @@
+source:
+  type: kafka
+  bootstrap.servers: "localhost:9092"
+  group.id: TRANSACTION
+  starting_mode: earliest
+  config:
+    max.partition.fetch.bytes: 60485760
+
+sink:
+  type: kafka
+  bootstrap.servers: "localhost:9092"
+  group.id: TRANSACTION
+
+executor:
+  type: spark
+  app_name: replicate Kafka topic
+  config:
+    spark.scheduler.mode: FAIR
+
+job_properties:
+  job_mode: STREAMING
+  source_topic: SOURCE.TRANSACTION
+  sink_topic: COPY.TRANSACTION
+  data_save_mode: APPEND

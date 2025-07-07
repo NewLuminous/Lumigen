@@ -1,0 +1,55 @@
+from __future__ import annotations
+
+import io
+import typing as t
+from pathlib import Path
+
+from ruamel import yaml
+
+from utils.errors import DPError
+
+
+YAML = lambda: yaml.YAML(typ="safe")  # noqa: E731
+
+
+def load(
+    source: str | Path,
+    raise_if_empty: bool = True,
+    allow_duplicate_keys: bool = False,
+) -> t.Dict:
+    """Loads a YAML object from either a raw string or a file."""
+    path: t.Optional[Path] = None
+
+    if isinstance(source, Path):
+        path = source
+        with open(source, "r", encoding="utf-8") as file:
+            source = file.read()
+
+    yaml = YAML()
+    yaml.allow_duplicate_keys = allow_duplicate_keys
+    contents = yaml.load(source)
+    if contents is None:
+        if raise_if_empty:
+            error_path = f" '{path}'" if path else ""
+            raise DPError(f"YAML source{error_path} can't be empty.")
+        return {}
+
+    return contents
+
+
+@t.overload
+def dump(value: t.Any, stream: io.IOBase) -> None: ...
+
+
+@t.overload
+def dump(value: t.Any) -> str: ...
+
+
+def dump(value: t.Any, stream: t.Optional[io.IOBase] = None) -> t.Optional[str]:
+    """Dumps a ruamel.yaml loaded object and converts it into a string or writes it to a stream."""
+    result = io.StringIO()
+    yaml.YAML().dump(value, stream or result)
+
+    if stream:
+        return None
+    return result.getvalue()

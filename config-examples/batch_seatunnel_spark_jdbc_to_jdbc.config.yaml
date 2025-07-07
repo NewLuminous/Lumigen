@@ -1,0 +1,42 @@
+source:
+  type: Jdbc
+  result_table_name: "packages_inline"
+  url: "jdbc:postgresql://localhost:5432/pagila"
+  driver: "org.postgresql.Driver"
+  user: postgres
+  password: postgres
+  query: "SELECT id, yumdata->'Url' AS url, yumdata->'Filename' AS filename, last_updated FROM public.packages_yum_postgresql_org"
+  partition_column: "id"
+  partition_num: 4
+
+sink:
+  type: Jdbc
+  source_table_name: "packages"
+  url: "jdbc:postgresql://localhost:5432/postgres"
+  driver: "org.postgresql.Driver"
+  user: postgres
+  password: postgres
+  generate_sink_sql: true
+  database: postgres
+  table: "public.packages"
+  batch_size: 10000
+  schema_save_mode: "RECREATE_SCHEMA"
+  data_save_mode: "DROP_DATA"
+
+executor:
+  type: spark
+  app_name: batch packages_yum_postgresql_org
+
+job_properties:
+  seatunnel_env:
+    parallelism: 1
+    job.mode: "BATCH"
+  seatunnel_transform:
+    - Replace:
+        source_table_name: "packages_inline"
+        result_table_name: "packages"
+        replace_field: "filename"
+        pattern: "\""
+        replacement: ""
+  spark_submit_options:
+    master: yarn
