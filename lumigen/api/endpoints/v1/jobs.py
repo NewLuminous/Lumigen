@@ -4,12 +4,15 @@ from fastapi.responses import PlainTextResponse
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+import logging
 from core.config.root import Config
 from api.config import settings
 from api.enums import JobStatus
 from api.schemas import JobRequest, JobStatusResponse, JobInfoResponse, JobMetricsResponse, JobPreviewResponse, JobColumnMapping
 from api.integrations.base_adapter import JobManagerAdapter
 from api.dependencies import get_job_manager, get_custom_executor
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter()
@@ -20,7 +23,7 @@ async def preview_job(response: Response,
                       config: Config, sample_size: int = 20,
                       job_manager: JobManagerAdapter = Depends(get_job_manager)):
     async with preview_job_semaphore:
-        response_data = await job_manager.preview_job(config, sample_size=sample_size)
+        response_data = await job_manager.get_data_preview(config, sample_size=sample_size)
     if not response_data.success:
         response.status_code = status.HTTP_400_BAD_REQUEST
     return response_data
@@ -29,16 +32,23 @@ async def preview_job(response: Response,
 async def column_mapping(response: Response, config: Config,
                          job_manager: JobManagerAdapter = Depends(get_job_manager)):
     async with preview_job_semaphore:
-        response_data = await job_manager.preview_job_output_column_mapping(config)
+        response_data = await job_manager.get_column_mapping_preview(config)
     if not response_data.success:
         response.status_code = status.HTTP_400_BAD_REQUEST
     return response_data
+
+def run_job_submission_background(job_manager: JobManagerAdapter, config: Config, id: str, name: t.Optional[str]):
+    """Wrapper function for the background task to handle exceptions gracefully."""
+    try:
+        job_manager.submit_job(config, id, name)
+    except Exception:
+        logger.exception(f"Background submission for job ID '{id}' failed.")
 
 @router.post("/submit", response_model=JobStatusResponse, status_code=status.HTTP_202_ACCEPTED)
 async def submit_job(background_tasks: BackgroundTasks,
                      config: Config, id: str, name: t.Optional[str]=None,
                      job_manager: JobManagerAdapter = Depends(get_job_manager)):
-    background_tasks.add_task(job_manager.submit_job, config, id, name)
+    background_tasks.add_task(run_job_submission_background, job_manager, config, id, name)
     response = JobStatusResponse(
         job_id=id,
         job_name=name,
@@ -134,12 +144,3 @@ async def get_job_logs(id: str,
         job_manager.get_job_logs, id, tail=tail, since=since, stdout=stdout, stderr=stderr, timestamps=timestamps
     ))
     return response
-
-# @router.get("/test", response_model=t.Any)
-# async def test(job_manager: JobManagerAdapter = Depends(get_job_manager)):
-#     results = []
-#     containers = job_manager.client.containers.list(all=True, sparse=False)
-#     for container in containers:
-#         results.append(container.attrs)
-#         #results.append(container.stats(stream=False))
-#     return results

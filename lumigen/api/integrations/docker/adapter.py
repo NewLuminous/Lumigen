@@ -17,6 +17,7 @@ import docker
 from docker.errors import ContainerError
 from core.config.root import Config
 from core.config.connection import parse_connection_config
+from core.config.job import JobMode
 from core.engine_context import SQLContextManager, SparkStatus
 import transformers
 from utils import yaml
@@ -25,10 +26,10 @@ from api.config import settings
 from api.enums import JobStatus
 from api.schemas import JobStatusResponse, JobInfoResponse, JobMetricsResponse, DataFetchResponse, JobPreviewResponse, JobColumnMapping
 from api.integrations.base_adapter import JobManagerAdapter
+from api.integrations.parser import PySparkLogParser
 from api.integrations.docker.enums import ContainerStatus
 from api.integrations.docker.schemas import ContainerInfo
-from api.integrations.docker.parser import PySparkLogParser
-from api.entry_points.app_preview import PreviewRunner
+from api.entry_points.app_preview import PreviewRunner, DATA_START_DELIMITER, DATA_END_DELIMITER
 
 
 logger = logging.getLogger(__name__)
@@ -36,8 +37,6 @@ _docker_adapter_instance: "DockerAdapter" = None
 
 class DockerAdapter(JobManagerAdapter):
     SEPARATOR = '.'
-    DATA_START_DELIMITER = "=== JSON_DATA_START ==="
-    DATA_END_DELIMITER = "=== JSON_DATA_END ==="
 
     client: docker.DockerClient = None
     job_dict: t.Dict[str, ContainerInfo] = {}
@@ -54,7 +53,7 @@ class DockerAdapter(JobManagerAdapter):
 
         self._refresh_job_dict()
 
-    def submit_job(self, config: Config, id: str, name: t.Optional[str]=None, checkpoint_dir: t.Optional[str]=settings.CHECKPOINT_DIR):
+    def submit_job(self, config: Config, id: str, name: t.Optional[str]=None, checkpoint_dir: t.Optional[str]=None) -> JobStatusResponse:
         id = DockerAdapter._normalize_job_id(id)
         if name is None:
             name = settings.JOB_IMAGE_NAME
@@ -117,7 +116,7 @@ class DockerAdapter(JobManagerAdapter):
                 current_file_path = Path(__file__).resolve()
                 host_project_path = current_file_path.parent.parent.parent.parent
                 volumes = {
-                    str(host_project_path): {'bind': '/home/spark', 'mode': 'ro'},
+                    #str(host_project_path): {'bind': '/home/spark', 'mode': 'ro'},
                 }
                 # Sync container time with host time for accurate logging
                 if Path('/etc/localtime').exists():
@@ -131,6 +130,9 @@ class DockerAdapter(JobManagerAdapter):
                     os.chmod(temp_config_file_host_path, 0o644) # Sets rw-r--r--
                     volumes[temp_config_file_host_path] = {'bind': temp_config_file_container_path, 'mode': 'ro'}
 
+                job_mode = config.job_properties.get("job_mode", JobMode.BATCH)
+                if job_mode == JobMode.STREAMING:
+                    checkpoint_dir = checkpoint_dir or settings.CHECKPOINT_DIR
                 if checkpoint_dir:
                     volumes[checkpoint_dir] = {'bind': '/spark-ckpts', 'mode': 'rw'}
                     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -223,7 +225,7 @@ class DockerAdapter(JobManagerAdapter):
             message=f"Job with ID '{id}' does not exist or was removed."
         )
     
-    def delete_job(self, id: str):
+    def delete_job(self, id: str) -> JobStatusResponse:
         id = DockerAdapter._normalize_job_id(id)
         if id in self.job_dict:
             job_name=self.get_job_name(id)
@@ -436,13 +438,13 @@ class DockerAdapter(JobManagerAdapter):
                 })
         return result
     
-    async def submit_temp_job(self, config: Config, temp_job_name: t.Optional[str] = "Temp job"):
+    async def run_disposable_job(self, config: Config, temp_job_name: t.Optional[str] = "Temp job") -> DataFetchResponse:
         temp_config_file_host_path = None
         try:
             current_file_path = Path(__file__).resolve()
             host_project_path = current_file_path.parent.parent.parent.parent
             volumes = {
-                str(host_project_path): {'bind': '/home/spark', 'mode': 'ro'},
+                #str(host_project_path): {'bind': '/home/spark', 'mode': 'ro'},
             }
             # Sync container time with host time for accurate logging
             if Path('/etc/localtime').exists():
@@ -485,14 +487,14 @@ class DockerAdapter(JobManagerAdapter):
                 )
             
             stdout_data = docker_result["stdout"]
-            parsed_data = log_parser.parse_json_data_with_delimiters(stdout_data, self.DATA_START_DELIMITER, self.DATA_END_DELIMITER)
+            parsed_data = log_parser.parse_json_data_with_delimiters(stdout_data, DATA_START_DELIMITER, DATA_END_DELIMITER)
             if parsed_data is not None:
                 logger.debug(f"{temp_job_name} ran successfully.")
                 return DataFetchResponse(
                     success=True,
                     data=parsed_data,
                     detail=f"{temp_job_name} ran successfully.",
-                    logs=log_parser.redact_delimited_content(stdout_data, self.DATA_START_DELIMITER, self.DATA_END_DELIMITER, replacement_text=""),
+                    logs=log_parser.redact_delimited_content(stdout_data, DATA_START_DELIMITER, DATA_END_DELIMITER, replacement_text=""),
                 )
             else:
                 error_msg = "Data fetch failed or data not found."
@@ -516,100 +518,6 @@ class DockerAdapter(JobManagerAdapter):
                         temp_file.unlink()
                     except OSError as e:
                         logger.error(f"Failed to delete temp config file '{temp_file.resolve()}': {e}")
-
-    async def preview_job(self, config: Config, sample_size: int = 20):
-        config.job_properties["source_limit"] = 10000
-        config.job_properties["source_batch_size"] = sample_size
-        config.executor = None # Python by default for faster response
-        config.sink = None
-        try:
-            context_manager = SQLContextManager.get_instance()
-            if self._can_run_job_directly(config) and context_manager.get_spark_status() == SparkStatus.READY:
-                result = None
-
-                def set_output(json_string):
-                    nonlocal result
-                    result = json.loads(json_string)
-
-                config.executor = parse_connection_config({"type": "spark"})
-                runner = PreviewRunner(config, resolve_executor=False)
-                runner.run(callback=set_output, do_validate_connections=False)
-
-                if result:
-                    return JobPreviewResponse(
-                        success=True,
-                        schema=result.get("schema"),
-                        data=result.get("data"),
-                        detail=f"{'Job preview'} ran successfully.",
-                        logs=f"{'Job preview'} ran successfully.",
-                    )
-                else:
-                    raise Exception("Data preview callback was not executed.")
-        except Exception as e:
-            return JobPreviewResponse(
-                success=False,
-                schema=None,
-                data=None,
-                detail=str(e),
-                logs=traceback.format_exc(),
-            )
-
-        data_res = await self.submit_temp_job(config, temp_job_name="Job preview")
-        return JobPreviewResponse(
-            success=data_res.success,
-            schema=data_res.data["schema"] if data_res.data else None,
-            data=data_res.data["data"] if data_res.data else None,
-            detail=data_res.detail,
-            logs=data_res.logs if data_res.logs else None,
-        )
-    
-    async def preview_job_output_column_mapping(self, config: Config):
-        config.job_properties["source_limit"] = 1
-        config.job_properties["source_batch_size"] = 1
-        config.executor = None # Python by default for faster response
-        try:
-            context_manager = SQLContextManager.get_instance()
-            if self._can_run_job_directly(config, schema_only=True) and context_manager.get_spark_status() == SparkStatus.READY:
-                result = None
-
-                def set_output(json_string):
-                    nonlocal result
-                    result = json.loads(json_string)
-
-                config.executor = parse_connection_config({"type": "spark"})
-                runner = PreviewRunner(config, resolve_executor=False)
-                runner.run(callback=set_output, do_validate_connections=False)
-
-                if result:
-                    return JobColumnMapping(
-                        success=True,
-                        column_mappings=result.get("column_mappings"),
-                        unmapped_source_columns=result.get("unmapped_source_columns"),
-                        unmapped_destination_columns=result.get("unmapped_destination_columns"),
-                        detail=f"{'Job output column mapping'} ran successfully.",
-                        logs=f"{'Job output column mapping'} ran successfully.",
-                    )
-                else:
-                    raise Exception("Data preview callback was not executed.")
-        except Exception as e:
-            return JobColumnMapping(
-                success=False,
-                column_mappings=None,
-                unmapped_source_columns=None,
-                unmapped_destination_columns=None,
-                detail=str(e),
-                logs=traceback.format_exc(),
-            )
-
-        data_res = await self.submit_temp_job(config, temp_job_name="Job output column mapping")
-        return JobColumnMapping(
-            success=data_res.success,
-            column_mappings=data_res.data["column_mappings"] if data_res.data else None,
-            unmapped_source_columns=data_res.data["unmapped_source_columns"] if data_res.data else None,
-            unmapped_destination_columns=data_res.data["unmapped_destination_columns"] if data_res.data else None,
-            detail=data_res.detail,
-            logs=data_res.logs if data_res.logs else None,
-        )
 
     def _refresh_job_dict(self):
         new_job_dict = defaultdict(ContainerInfo)
@@ -903,29 +811,6 @@ class DockerAdapter(JobManagerAdapter):
             raise
         
         return result
-    
-    def _can_run_job_directly(self, config: Config, schema_only: t.Optional[bool] = False):
-        source_cfg = config.get_source()
-        engine_adapter_src = source_cfg.create_engine_adapter() if source_cfg else None
-        if engine_adapter_src:
-            engine_adapter_src.ping()
-
-        sink_cfg = config.get_sink()
-        engine_adapter_dest = sink_cfg.create_engine_adapter() if sink_cfg else None
-        if engine_adapter_dest:
-            engine_adapter_dest.ping()
-
-        if not schema_only:
-            for transform_cfg in config.transformation_pipeline:
-                if transform_cfg.name.upper() == "SQL":
-                    query = transform_cfg.options.get("query")
-                    if not query:
-                        continue
-
-                    select_exp = transformers.sql.SQL.parse_and_validate_query(query, engine_adapter_src, **config.job_properties)
-                    for _ in select_exp.find_all(exp.Join):
-                        return False
-        return True
 
     @staticmethod
     def _normalize_container_name(container_name: str) -> str:
