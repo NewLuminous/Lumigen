@@ -1,0 +1,50 @@
+[project]
+name = "lumigen"
+version = "0.1.0"
+description = "A powerful, configuration-driven ETL framework to simplify and accelerate data pipeline development."
+readme = "README.md"
+authors = [{ name="NewLuminous" }]
+license = { file="LICENSE" }
+requires-python = ">=3.9"
+dependencies = [
+    "confluent-kafka==2.6.1",
+    "Faker>=33.3.0",
+    "findspark>=2.0.1",
+    "oracledb>=2.5.0",
+    "polars>=1.31.0",
+    "psycopg2-binary>=2.9.10",
+    "pyarrow>=18.1.0",
+    "pydantic-settings>=2.10.1",
+    "pyhocon>=0.3.61",
+    "pymssql>=2.3.2",
+    "pymysql>=1.1.1",
+    "pyspark==3.3.3",
+    "python-dotenv>=1.0.1",
+    "sqlmesh==0.183.0"
+]
+classifiers = [
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: SQL",
+]
+
+[project.scripts]
+lumigen = "lumigen.entry_points.app:main"
+
+[project.urls]
+Homepage = "https://github.com/newluminous/lumigen"
+Repository = "https://github.com/newluminous/lumigen"
+Issues = "https://github.com/newluminous/lumigen/issues"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["lumigen"]

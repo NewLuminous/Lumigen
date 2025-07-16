@@ -75,29 +75,46 @@ job_properties:
 
 ### Installation
 
-1.  Clone the repository:
+1.  **Clone the Repository**
     ```bash
     git clone https://github.com/newluminous/lumigen.git
     cd lumigen
     ```
 
-2.  Install the required dependencies:
+2.  **(Recommended) Create and Activate a Virtual Environment**
+    A virtual environment keeps your project's dependencies isolated.
     ```bash
-    pip install -r requirements.txt
+    python3.9 -m venv venv
+    source venv/bin/activate
     ```
 
-3.  Set up your environment. Create a `.env` file to store secrets and environment-specific variables:
+3.  **Install Lumigen in Editable Mode**
+    This command reads the `pyproject.toml` file, installs all required dependencies, and makes the `lumigen` command available in your shell. The `-e` (editable) flag means that changes you make to the source code will be active immediately without reinstalling.
+    ```bash
+    pip install -e .
+    ```
+
+### Environment Configuration
+
+Lumigen uses a `.env` file to load environment-specific variables. This keeps local configuration out of your main YAML files.
+
+1.  **Create a `.env` file** in the project's root directory (`lumigen/`).
+
+2.  **Add your environment variables.** For example, to specify the location of your Spark installation:
     ```dotenv
     # .env
+    
+    # Path to your Spark installation
     SPARK_HOME=/path/to/your/spark-x.x.x-bin-hadoop3
     ```
+    Lumigen will automatically load this file at runtime.
 
 ### Running a Job
 
-With your configuration file and `.env` file in place, running a job is as simple as:
+With your environment configured and the project installed, running a job is simple. Use the `lumigen` command followed by the path to your configuration file.
 
 ```bash
-python entry_points/app.py -c /path/to/your/config.yaml
+lumigen -c /path/to/your/config.yaml
 ```
 
 Lumigen will parse the config, select the appropriate runner, and execute the job.

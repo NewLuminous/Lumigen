@@ -38,7 +38,7 @@ def run_spark_job(runner: JobRunner, config_path: str, logger: ExitCapableLogger
     logger.info(f"Submitting Spark job with command: {' '.join(spark_submit_cmd)}")
     return submit_job(spark_submit_cmd)
 
-if __name__ == '__main__':
+def main():
     setup_logger()
     logger = logging.getLogger(__name__)
 
@@ -57,3 +57,6 @@ if __name__ == '__main__':
         else:
             # Other runners (Python, etc.) can run in the current process
             runner.run()
+
+if __name__ == '__main__':
+    main()

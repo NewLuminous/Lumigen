@@ -46,6 +46,10 @@ def transform_values(
     def _transform_value(value: t.Any, dtype: exp.DataType) -> t.Any:
         if value is pd.NA:
             return exp.null()
+        
+        # Ref: https://sqlglot.com/sqlglot/expressions.html#convert
+        if isinstance(value, bytearray):
+            return exp.HexString(this=value.hex())
 
         if (
             isinstance(value, (list, np.ndarray))
