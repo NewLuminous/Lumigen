@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import typing as t
 
-from sqlglot import exp, parse_one
 from sqlmesh.core.engine_adapter.base import (
     EngineAdapter,
     EngineAdapterWithIndexSupport,
@@ -62,12 +61,3 @@ def create_engine_adapter(
             **kwargs,
         )
     return engine_adapter(connection_factory, **kwargs)
-
-def dialect_insensitive_tbl_name(table_name: TableName, from_dialect: str) -> str:
-    if not table_name:
-        return table_name
-    try:
-        table_exp: exp.Table = parse_one(table_name, dialect=from_dialect, into=exp.Table)
-        return table_exp.sql()
-    except ValueError:
-        return str(table_name)

@@ -1,16 +1,18 @@
 from __future__ import annotations
 import typing as t
 from dataclasses import dataclass
+import logging
 from sqlglot import exp
 from sqlmesh.core.engine_adapter.base import EngineAdapter
 
-from core.engine_adapter import dialect_insensitive_tbl_name
 from core.config.root import Config
 from core.config.job import JobPropertiesModel
 from core.adapters import engine_adapter_factory
 
+logger = logging.getLogger(__name__)
 
-@dataclass(frozen=True)
+
+@dataclass
 class JobContext:
     """
     An immutable container for the runtime context of a job.
@@ -24,7 +26,26 @@ class JobContext:
     def build_source_expression(self) -> t.Union[exp.Expression, str]:
         return self.job_props_model.build_source_expression(dialect=self.source_adapter.dialect)
     
+    def __enter__(self) -> "JobContext":
+        return self
 
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        logger.debug("Closing all resources in JobContext...")
+        
+        try:
+            if self.source_adapter:
+                self.source_adapter.close()
+                logger.debug("Source engine adapter closed successfully.")
+        except Exception as e:
+            logger.error("Error closing source engine adapter", exc_info=e)
+
+        try:
+            if self.sink_adapter:
+                self.sink_adapter.close()
+                logger.debug("Sink engine adapter closed successfully.")
+        except Exception as e:
+            logger.error("Error closing sink engine adapter", exc_info=e)
+    
 class JobContextBuilder:
     """
     Constructs a complete and consistent JobContext for a job run or preview.

@@ -329,7 +329,7 @@ class KafkaConnectionConfig(ConnectionConfig):
 
     concurrent_tasks: int = 4
     register_comments: bool = False
-    pre_ping: bool = True
+    pre_ping: Literal[False] = False
 
     type_: Literal["kafka"] = Field(alias="type", default="kafka")
 

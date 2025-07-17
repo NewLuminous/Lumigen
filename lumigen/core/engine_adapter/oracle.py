@@ -367,7 +367,7 @@ class OracleEngineAdapter(
         try:
             self.connection.ping()
         finally:
-            self._connection_pool.close()
+            self._connection_pool.close_cursor()
     
     def _build_insert_stmt(self, table_name: TableName, columns: t.List[str]) -> str:
         columns = list(columns)

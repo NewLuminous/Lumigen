@@ -39,7 +39,7 @@ class TopicValidator:
         if name == "..":
             return "'..' is not allowed"
         if len(name) > cls.MAX_NAME_LENGTH:
-            return "the length of '" + name + "' is longer than the max allowed length " + MAX_NAME_LENGTH
+            return "the length of '" + name + "' is longer than the max allowed length " + cls.MAX_NAME_LENGTH
         if not cls.contains_valid_pattern(name):
              return "'" + name + "' contains one or more characters other than " +\
                 "ASCII alphanumerics, '.', '_' and '-'"

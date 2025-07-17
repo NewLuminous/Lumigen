@@ -43,7 +43,7 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
         
         # --- DUAL Table Validation Logic ---
         dual_exists = False
-        source_table = JobSourceRelatedFields(**kwargs).get_source_table()
+        source_table = JobSourceRelatedFields(**kwargs).get_source_path()
         for table_exp in select_exp.find_all(exp.Table):
             if source:
                 origin_table = source.get_qualified_table_name(table_exp.name, table_exp.db)

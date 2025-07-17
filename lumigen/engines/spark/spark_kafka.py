@@ -9,6 +9,7 @@ from sqlglot import exp
 from core.engine_context import SQLContextManager
 from engines.spark.errors import NotSupportedError
 from engines.spark.spark_session import SparkSessionCursor, SparkSessionConnection
+from utils.parsing import extract_main_table
 
 logger = logging.getLogger(__name__)
 
@@ -54,9 +55,14 @@ class SparkKafkaCursor(SparkSessionCursor):
 
         return kafka_options
 
-    def execute(self, topic_pattern: str, parameters: t.Optional[t.Any] = None) -> None:
+    def execute(self, query: str, parameters: t.Optional[t.Any] = None) -> None:
         if parameters:
             raise NotSupportedError("Parameterized queries are not supported")
+        
+        try:
+            topic_pattern = extract_main_table(query, quoted=False)
+        except:
+            topic_pattern = query
         
         topic_pattern = '|'.join(f"({tn.strip()})" for tn in topic_pattern.split(','))
 

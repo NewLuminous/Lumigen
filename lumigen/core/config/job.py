@@ -4,10 +4,11 @@ import typing as t
 from pydantic import ValidationError, BaseModel
 from enum import Enum
 from sqlglot import exp
+from sqlglot.errors import ParseError
 from sqlmesh.core.config.base import BaseConfig
 from sqlmesh.utils.pydantic import model_validator, field_validator
 
-from core.engine_adapter import dialect_insensitive_tbl_name
+from utils.parsing import dialect_insensitive_tbl_name, extract_main_table
 from utils.errors import ConfigError
 
 
@@ -56,69 +57,83 @@ def normalize_topic_list_to_str_validator(v: t.Any) -> t.Any:
     return v
 
 class JobSourceRelatedFields(BaseModel):
-    source_table: t.Optional[str] = None
-    """The source table."""
+    source_path: t.Optional[str] = None
+    """The identifier for the data source (can be a table, collection, topic, etc.)."""
     source_query: t.Optional[str] = None
     """The query to extract data from the data source."""
-    source_topic: t.Optional[str] = None
-    """The Kafka topic(s) to consume messages from."""
     source_batch_size: t.Optional[int] = None
     """The number of rows to fetch from the data source per round trip."""
     source_limit: t.Optional[int] = None
     """The maximum number of rows to fetch from the data source."""
 
-    _normalize_source_topic = field_validator(
-        "source_topic", mode="before", check_fields=False
-    )(normalize_topic_list_to_str_validator)
+    SOURCE_ALIASES: t.ClassVar[t.Set[str]] = {
+        "source_path",
+        "source_table",
+        "source_collection",
+        "source_topic",
+    }
 
-    @model_validator(mode="after")
-    def _validate_source_fields_logic(self) -> "JobSourceRelatedFields":
-        # Check for mutual exclusivity first
-        source_definition_fields = {"source_table", "source_query", "source_topic"}
-        provided_source_definitions = [
-            f for f in source_definition_fields if getattr(self, f, None) is not None
-        ]
-
+    @model_validator(mode='before')
+    @classmethod
+    def _normalize_and_validate_source(cls, data: t.Any) -> t.Any:
+        if not isinstance(data, dict):
+            return data # Let Pydantic handle the basic type error
+        
+        # Check for mutual exclusivity
+        source_definition_fields = cls.SOURCE_ALIASES.copy()
+        source_definition_fields.add("source_query")
+        provided_source_definitions = source_definition_fields.intersection(data.keys())
         if len(provided_source_definitions) > 1:
-            # Sort for consistent error messages
-            provided_source_definitions.sort()
             raise ValueError(
-                f"Cannot set both source properties '{provided_source_definitions[0]}' and '{provided_source_definitions[1]}'."
+                f"Cannot set these source properties at once: {', '.join(sorted(list(provided_source_definitions)))}."
             )
         
+        # Check that at least one was provided
         if not provided_source_definitions:
             raise ValueError(
                 f"One of '{', '.join(sorted(list(source_definition_fields)))}' must be provided as a data source."
             )
             
-        return self
+        # Get the single alias that was used (e.g., 'source_topic')
+        provided_aliases = cls.SOURCE_ALIASES.intersection(data.keys())
+        if provided_aliases:
+            alias_key = provided_aliases.pop()
+            value = data.pop(alias_key)
+
+            # Perform any specific normalization (like for topics)
+            if alias_key == "source_topic":
+                value = normalize_topic_list_to_str_validator(value)
+
+            # Populate the canonical field
+            data['source_path'] = value
+        
+        return data
     
-    def get_source_table(self):
-        return self.source_table or self.source_topic
+    def get_source_path(self):
+        return self.source_path or extract_main_table(self.source_query)
     
     def build_source_expression(self, dialect: t.Optional[str] = None) -> t.Union[exp.Expression, str]:
         """
         Interprets the source fields and returns a SQLGlot expression or a string.
-        This is the single source of truth for resolving the data source.
         """
-        if self.source_topic:
-            return self.source_topic
-        
         if self.source_query:
             return self.source_query
         
-        if self.source_table:
-            return exp.select('*').from_(exp.to_table(
-                dialect_insensitive_tbl_name(self.source_table, dialect)
-            ))
+        if self.source_path:
+            try:
+                return exp.select('*').from_(exp.to_table(
+                    dialect_insensitive_tbl_name(self.source_path, dialect)
+                ))
+            except ParseError:
+                return exp.select('*').from_(exp.to_identifier(
+                    self.source_path, quoted=True
+                )).sql()
         
         return None
     
 class JobSinkRelatedFields(BaseModel):
-    sink_table: t.Optional[str] = None
-    """The destination table."""
-    sink_topic: t.Optional[str] = None
-    """The Kafka topic(s) to produce messages to."""
+    sink_path: t.Optional[str] = None
+    """The identifier for the data destination (can be a table, collection, topic, etc.)."""
     data_save_mode: t.Optional[DataSaveMode] = DataSaveMode.APPEND
     """Supported processing schemes for saving data. See `DataSaveMode` enum for options."""
     key: t.Optional[t.List[str]] = None
@@ -128,9 +143,39 @@ class JobSinkRelatedFields(BaseModel):
     replace_query_kwargs: t.Optional[t.Dict[str, t.Any]] = None
     """Optional replace table properties."""
 
-    _normalize_sink_topic = field_validator(
-        "sink_topic", mode="before", check_fields=False
-    )(normalize_topic_list_to_str_validator)
+    SINK_ALIASES: t.ClassVar[t.Set[str]] = {
+        "sink_path",
+        "sink_table",
+        "sink_collection",
+        "sink_topic",
+    }
+
+    @model_validator(mode='before')
+    @classmethod
+    def _normalize_and_validate_sink(cls, data: t.Any) -> t.Any:
+        if not isinstance(data, dict):
+            return data  # Let Pydantic handle the basic type error
+
+        # Check for mutual exclusivity
+        provided_aliases = cls.SINK_ALIASES.intersection(data.keys())
+        if len(provided_aliases) > 1:
+            raise ValueError(
+                f"Cannot set these sink properties at once: {', '.join(sorted(list(provided_aliases)))}."
+            )
+        
+        # A sink is optional in some cases (like preview), so we don't check for its existence here.
+        if provided_aliases:
+            alias_key = provided_aliases.pop()
+            value = data.pop(alias_key)
+
+            # Perform any specific normalization (like for topics)
+            if alias_key == "sink_topic":
+                value = normalize_topic_list_to_str_validator(value)
+
+            # Populate the canonical field
+            data['sink_path'] = value
+        
+        return data
 
     @model_validator(mode="after")
     def _check_sink_mutually_exclusive_fields(self) -> "JobSinkRelatedFields":
@@ -144,8 +189,8 @@ class JobSinkRelatedFields(BaseModel):
             )
         return self
     
-    def get_sink_table(self):
-        return self.sink_table or self.sink_topic
+    def get_sink_path(self):
+        return self.sink_path
     
 class SeaTunnelFields(BaseModel):
     seatunnel_transform: t.Optional[t.Union[t.Dict[str, t.Any], t.List[t.Dict[str, t.Any]]]] = None

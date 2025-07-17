@@ -9,7 +9,9 @@ from confluent_kafka import Consumer, Producer, Message, TopicPartition
 from confluent_kafka.admin import AdminClient
 from pandas import DataFrame
 from sqlglot import exp
+
 from utils import merge_dicts
+from utils.parsing import extract_main_table
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +36,15 @@ class KafkaClientCursor:
         self._no_msg_cnt = 0
         self._no_msg_log_interval = 3600
 
-    def execute(self, topic: str, parameters: t.Optional[t.Any] = None) -> None:
-        topics = [tn.strip() for tn in topic.split(',')]
-        logger.info("Subscribing to topic(s): " + ", ".join(topics))
-        self._consumer.subscribe(topics)
-        self._topic_patterns = topics
+    def execute(self, query: str, parameters: t.Optional[t.Any] = None) -> None:
+        try:
+            topics = extract_main_table(query, quoted=False)
+        except:
+            topics = query
+        topic_list = [tn.strip() for tn in topics.split(',')]
+        self._consumer.subscribe(topic_list)
+        self._topic_patterns = topic_list
+        logger.info("Subscribed to topic(s): " + ", ".join(self.subscriptions))
 
     @property
     def topics(self) -> t.List[str]:
@@ -48,7 +54,7 @@ class KafkaClientCursor:
     
     @property
     def subscriptions(self) -> t.List[str]:
-        subscribed_topics = [topic for topic in self.topics if any(re.match(pattern, topic) for pattern in self._topic_patterns)]
+        subscribed_topics = [topic for topic in self.topics if any(re.fullmatch(pattern, topic) for pattern in self._topic_patterns)]
         return subscribed_topics
 
     def _get_last_offset(self, topic: str, partition: int):
@@ -184,7 +190,7 @@ class KafkaClientConnection:
         return list(all_topics)
     
     def filter_topics(self, patterns: t.List[str]) -> t.List[str]:
-        topics = [topic for topic in self.topics if any(re.match(pattern, topic) for pattern in patterns)]
+        topics = [topic for topic in self.topics if any(re.fullmatch(pattern, topic) for pattern in patterns)]
         return topics
     
     def ping(self) -> None:
@@ -197,7 +203,7 @@ class KafkaClientConnection:
         self.producer.begin_transaction()
 
     def commit(self, timeout: float=10.0) -> None:
-        #self.consumer.commit()
+        #self.consumer.commit() # TODO
         self.producer.commit_transaction(timeout)
 
     def rollback(self) -> None:

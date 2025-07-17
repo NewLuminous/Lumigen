@@ -8,8 +8,8 @@ from sqlmesh.core.engine_adapter.base import (
 )
 from utils import merge_dicts, FallbackKeyDict
 from utils.dataset import columns_to_types_from_df, get_columns_name
+from utils.parsing import dialect_insensitive_tbl_name
 from core.config.job import TransformationConfig, DataSaveMode, JobSinkRelatedFields
-from core.engine_adapter import dialect_insensitive_tbl_name
 from transformers import transformer_factory, TransformationPipeline
 
 
@@ -27,7 +27,7 @@ def transform_data(transformation_pipeline: t.List[TransformationConfig], job_pr
     return trans_chain
 
 def write_data(dataset, t_chain: TransformationPipeline, writer: EngineAdapter, job_props: dict):
-    sink_table = JobSinkRelatedFields(**job_props).get_sink_table()
+    sink_table = JobSinkRelatedFields(**job_props).get_sink_path()
     sink_table = dialect_insensitive_tbl_name(sink_table, writer.dialect)
     writer = MicroBatchWriter(writer)
 
