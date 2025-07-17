@@ -92,7 +92,12 @@ class SparkKafkaConnection(SparkSessionConnection):
         return SparkKafkaCursor(self.spark, self.bootstrap_servers, self.group_id, self.starting_mode, self.kafka_config)
 
 
-def connection(app_name: t.Optional[str], conf: SparkConf, bootstrap_servers: str, group_id: str, starting_mode: t.Optional[str] = "earliest", kafka_config: t.Optional[t.Dict[str, t.Any]] = {}, catalog: t.Optional[str] = None) -> SparkKafkaConnection:
+def connection(app_name: t.Optional[str], conf: SparkConf, bootstrap_servers: str, group_id: str,
+               starting_mode: t.Optional[str] = "earliest",
+               kafka_config: t.Optional[t.Dict[str, t.Any]] = {},
+               catalog: t.Optional[str] = None,
+               hive_support: t.Optional[bool] = True,
+               ) -> SparkKafkaConnection:
     manager = SQLContextManager()
-    spark = manager.get_spark_session(app_name=app_name, conf=conf)
+    spark = manager.get_spark_session(app_name=app_name, conf=conf, hive_support=hive_support)
     return SparkKafkaConnection(spark, bootstrap_servers, group_id, starting_mode, kafka_config, catalog)

@@ -361,6 +361,7 @@ class SparkConnectionConfig(ConnectionConfig):
     config_dir: t.Optional[str] = None
     config: t.Optional[t.Dict[str, t.Any]] = {}
     catalog: t.Optional[str] = None
+    hive_support: t.Optional[bool] = True
 
     concurrent_tasks: int = 4
     register_comments: bool = False
@@ -398,6 +399,7 @@ class SparkConnectionConfig(ConnectionConfig):
         return {
             "app_name": self.app_name,
             "conf": spark_config,
+            "hive_support": self.hive_support,
         }
     
 

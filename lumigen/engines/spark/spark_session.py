@@ -120,9 +120,12 @@ class SparkSessionConnection:
         pass
 
 
-def connection(app_name: t.Optional[str], conf: SparkConf, catalog: t.Optional[str] = None) -> SparkSessionConnection:
+def connection(app_name: t.Optional[str], conf: SparkConf,
+               catalog: t.Optional[str] = None,
+               hive_support: t.Optional[bool] = True,
+               ) -> SparkSessionConnection:
     manager = SQLContextManager()
-    spark = manager.get_spark_session(app_name=app_name, conf=conf)
+    spark = manager.get_spark_session(app_name=app_name, conf=conf, hive_support=hive_support)
     return SparkSessionConnection(spark, catalog)
 
 

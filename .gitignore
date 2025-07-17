@@ -131,6 +131,11 @@ __pypackages__/
 celerybeat-schedule
 celerybeat.pid
 
+# Spark / Hive Local Metastore
+metastore_db/
+spark-warehouse/
+derby.log
+
 # SageMath parsed files
 *.sage.py
 

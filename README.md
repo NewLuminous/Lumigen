@@ -54,12 +54,17 @@ sink:
 executor:
   type: spark
   app_name: process_actors_table
+  hive_support: false
+  config:
+    spark.eventLog.enabled: false
 
 transformation_pipeline:
   - SQL:
       query: "SELECT actor_id, CONCAT(UPPER(first_name), ' ', UPPER(last_name)) AS full_name, last_update FROM dual"
 
 job_properties:
+  spark_submit_options:
+    master: local[*]
   source_table: public.actor
   sink_table: public.actor_transformed
   data_save_mode: OVERWRITE

@@ -20,7 +20,9 @@ from core.engine_adapter.postgres import PostgresEngineAdapter
 from core.engine_adapter.mysql import MySQLEngineAdapter
 from core.engine_adapter.mssql import MSSQLEngineAdapter
 from core.engine_adapter.kafka import KafkaEngineAdapter
-from core.engine_adapter.spark import *
+from core.engine_adapter.spark import (
+    SparkEngineAdapter, SparkJDBCEngineAdapter, SparkKafkaEngineAdapter,
+)
 
 DIALECT_TO_ENGINE_ADAPTER = {
     "hive": SparkEngineAdapter,

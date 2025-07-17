@@ -67,7 +67,10 @@ class SparkJDBCConnection(SparkSessionConnection):
         return SparkJDBCCursor(self.spark, self.connection_config)
 
 
-def connection(app_name: t.Optional[str], conf: SparkConf, connection_config: ConnectionConfig, catalog: t.Optional[str] = None) -> SparkJDBCConnection:
+def connection(app_name: t.Optional[str], conf: SparkConf, connection_config: ConnectionConfig,
+               catalog: t.Optional[str] = None,
+               hive_support: t.Optional[bool] = True,
+               ) -> SparkJDBCConnection:
     manager = SQLContextManager()
-    spark = manager.get_spark_session(app_name=app_name, conf=conf)
+    spark = manager.get_spark_session(app_name=app_name, conf=conf, hive_support=hive_support)
     return SparkJDBCConnection(spark, connection_config, catalog)
