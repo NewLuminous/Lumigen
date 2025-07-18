@@ -3,7 +3,7 @@ from __future__ import annotations
 import typing as t
 
 import logging
-import pyspark
+import pyspark.sql
 from sqlglot import exp
 
 from sqlmesh.core.engine_adapter.shared import (
@@ -11,8 +11,9 @@ from sqlmesh.core.engine_adapter.shared import (
 )
 
 if t.TYPE_CHECKING:
-    from sqlmesh.core._typing import TableName
+    from core._typing import TableName
     from sqlmesh.core.engine_adapter.base import QueryOrDF
+    from engines.spark.spark_jdbc import SparkJDBCCursor, SparkJDBCConnection
 
 from utils.dataset import DataFrameConverter
 from core.engine_adapter.spark.base import SparkEngineAdapter
@@ -74,6 +75,7 @@ class SparkJDBCEngineAdapter(SparkEngineAdapter):
             df = query_or_df
 
         if isinstance(df, pyspark.sql.DataFrame):
+            self.cursor: SparkJDBCCursor
             df.write.format("jdbc") \
                 .options(**self.cursor.jdbc_options) \
                 .option("dbtable", target_table.sql(dialect=self.dialect)) \
@@ -98,6 +100,7 @@ class SparkJDBCEngineAdapter(SparkEngineAdapter):
         # MERGE INTO TABLE is not supported temporarily by current version of vanilla Spark (3.3.3)
         # Delegate MERGE operation to corresponding engine adapter at the cost of collecting all the rows from PySpark DataFrame.
         df = DataFrameConverter.to_pandas(df)
+        self.connection: SparkJDBCConnection
         self.connection.engine_adapter.merge(target_table, df, columns_to_types, unique_key, when_matched, merge_filter)
 
     def columns(

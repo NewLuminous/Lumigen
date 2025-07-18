@@ -4,17 +4,20 @@ import typing as t
 from collections import defaultdict, OrderedDict
 import numpy as np
 import pandas as pd
-import pyspark
-from pyspark.sql import SparkSession
-from pyspark.sql.types import DoubleType
+import pyspark.sql
+import pyspark.sql.types as pyspark_types
 from pyspark.sql.functions import col, date_format
 from sqlglot import exp
+
+if t.TYPE_CHECKING:
+    from core._typing import DataFrameType
+
 from core.engine_context import SQLContextManager
 from utils import FallbackKeyDict
 from utils.parsing import extract_name_wo_params
 
 
-def get_columns_name(df) -> t.List[str]:
+def get_columns_name(df: DataFrameType) -> t.List[str]:
     columns = None
     if isinstance(df, pd.DataFrame):
         columns = [c[0] for c in df.dtypes.items()]
@@ -24,7 +27,7 @@ def get_columns_name(df) -> t.List[str]:
 
 class DataFrameConverter:
     @staticmethod
-    def to_spark(df) -> pyspark.sql.DataFrame:            
+    def to_spark(df: DataFrameType) -> pyspark.sql.DataFrame:            
         if isinstance(df, pd.DataFrame):
             # pandas.DataFrame.iteritems has been deprecated: https://pandas.pydata.org/pandas-docs/version/1.5/reference/api/pandas.DataFrame.iteritems.html
             if not hasattr(df, "iteritems"):
@@ -35,7 +38,7 @@ class DataFrameConverter:
         return df
 
     @staticmethod
-    def to_pandas(df) -> pd.DataFrame:
+    def to_pandas(df: DataFrameType) -> pd.DataFrame:
         if isinstance(df, pyspark.sql.DataFrame):
             col_group_by_dtype = defaultdict(list)
             for column in df.dtypes:
@@ -43,7 +46,7 @@ class DataFrameConverter:
                 col_group_by_dtype[col_dtype].append(column[0])
             if col_group_by_dtype.get("decimal"):
                 # There is no decimal data type in Pandas so convert all decimal data type to double type
-                df = df.withColumns({c: col(c).cast(DoubleType()) for c in col_group_by_dtype.get("decimal")})
+                df = df.withColumns({c: col(c).cast(pyspark_types.DoubleType()) for c in col_group_by_dtype.get("decimal")})
             if col_group_by_dtype.get("timestamp"):
                 # Set timestamp columns to string using date_format function
                 df = df.withColumns({c: date_format(c, "yyyy-MM-dd HH:mm:ss.SSS") for c in col_group_by_dtype.get("timestamp")})
@@ -57,7 +60,7 @@ class DataFrameConverter:
         return df
         
     @staticmethod
-    def to_records(df) -> t.List[t.Dict[str, t.Any]]:
+    def to_records(df: DataFrameType) -> t.List[t.Dict[str, t.Any]]:
         if isinstance(df, pyspark.sql.DataFrame):
             try:
                 df = DataFrameConverter.to_pandas(df)
@@ -102,24 +105,24 @@ TYPE_MAPPINGS = {
     pd.BooleanDtype: exp.DataType.build("boolean"),
     pd.DatetimeTZDtype: exp.DataType.build("timestamptz"),
     pd.CategoricalDtype: exp.DataType.build("USER-DEFINED"),
-    pyspark.sql.types.ByteType: exp.DataType.build("tinyint"),
-    pyspark.sql.types.ShortType: exp.DataType.build("smallint"),
-    pyspark.sql.types.IntegerType: exp.DataType.build("int"),
-    pyspark.sql.types.LongType: exp.DataType.build("bigint"),
-    pyspark.sql.types.FloatType: exp.DataType.build("float"),
-    pyspark.sql.types.DoubleType: exp.DataType.build("double"),
-    pyspark.sql.types.DecimalType: exp.DataType.build("decimal"),
-    pyspark.sql.types.StringType: exp.DataType.build("text"),
-    pyspark.sql.types.BinaryType: exp.DataType.build("binary"),
-    pyspark.sql.types.BooleanType: exp.DataType.build("boolean"),
-    pyspark.sql.types.DateType: exp.DataType.build("date"),
-    pyspark.sql.types.TimestampType: exp.DataType.build("timestamp"),
-    pyspark.sql.types.ArrayType: exp.DataType.build("array"),
-    pyspark.sql.types.MapType: exp.DataType.build("map"),
-    pyspark.sql.types.StructType: exp.DataType.build("struct"),
+    pyspark_types.ByteType: exp.DataType.build("tinyint"),
+    pyspark_types.ShortType: exp.DataType.build("smallint"),
+    pyspark_types.IntegerType: exp.DataType.build("int"),
+    pyspark_types.LongType: exp.DataType.build("bigint"),
+    pyspark_types.FloatType: exp.DataType.build("float"),
+    pyspark_types.DoubleType: exp.DataType.build("double"),
+    pyspark_types.DecimalType: exp.DataType.build("decimal"),
+    pyspark_types.StringType: exp.DataType.build("text"),
+    pyspark_types.BinaryType: exp.DataType.build("binary"),
+    pyspark_types.BooleanType: exp.DataType.build("boolean"),
+    pyspark_types.DateType: exp.DataType.build("date"),
+    pyspark_types.TimestampType: exp.DataType.build("timestamp"),
+    pyspark_types.ArrayType: exp.DataType.build("array"),
+    pyspark_types.MapType: exp.DataType.build("map"),
+    pyspark_types.StructType: exp.DataType.build("struct"),
 }
 
-def columns_to_types_from_df(df) -> t.Dict[str, exp.DataType]:
+def columns_to_types_from_df(df: DataFrameType) -> t.Dict[str, exp.DataType]:
     if isinstance(df, pd.DataFrame):
         result = OrderedDict()
         for column_name, column_type in df.dtypes.items():
@@ -196,7 +199,7 @@ def get_spark_data_type(data_type: str, data_type_params: t.Optional[t.List[t.An
 
     return _parse_datatype_string(ddl)
 
-def case_insensitive_column_name_mapping(df) -> t.Dict[str, str]:
+def case_insensitive_column_name_mapping(df: DataFrameType) -> t.Dict[str, str]:
     col_map = FallbackKeyDict()
     columns = get_columns_name(df)
 

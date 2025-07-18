@@ -3,13 +3,13 @@ import typing as t
 
 import six
 from abc import ABCMeta, abstractmethod
-import pyspark
+import pyspark.sql as pyspark_sql
 import pandas as pd
 from utils.errors import TransformerError
 
 
 # Must be tuple
-SUPPORTED_DATA_FRAME_CLASSES = (pyspark.sql.DataFrame, pd.DataFrame)
+SUPPORTED_DATA_FRAME_CLASSES = (pyspark_sql.DataFrame, pd.DataFrame)
 
 @six.add_metaclass(ABCMeta)
 class AbstractTransformer(object):

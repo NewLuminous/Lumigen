@@ -1,0 +1,27 @@
+source:
+  type: oracle
+  host: localhost
+  port: 1521
+  service_name: PROD
+  user: sa
+  password: ********
+
+sink:
+  type: oracle
+  host: localhost
+  port: 1521
+  service_name: PROD
+  user: sa
+  password: ********
+
+executor:
+  type: spark
+  app_name: batch CUSTOMERS
+  config:
+    spark.scheduler.mode: FAIR
+
+job_properties:
+  source_table: CO.CUSTOMERS
+  sink_table: CO.CUSTOMERS_COPY
+  data_save_mode: MERGE
+  sink_key: CUSTOMER_ID

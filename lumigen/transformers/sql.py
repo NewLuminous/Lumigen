@@ -2,7 +2,7 @@ import typing as t
 import sys
 from sqlglot import exp, parse_one, Dialects
 from sqlglot.errors import ParseError
-import pyspark
+import pyspark.sql as pyspark_sql
 from pyspark.sql.functions import col, current_timestamp, lit, array, create_map
 from pyspark.sql.utils import CapturedException
 import duckdb
@@ -121,9 +121,9 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
 
     @staticmethod
     def _prepare_spark_query(
-        df: pyspark.sql.DataFrame,
+        df: pyspark_sql.DataFrame,
         query: str,
-        spark: pyspark.sql.SparkSession,
+        spark: pyspark_sql.SparkSession,
         source: EngineAdapter,
         **kwargs
     ) -> t.Tuple[str, t.Dict]:
@@ -188,8 +188,8 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
     def _execute_spark_query(
         query: str,
         temp_views: t.Dict,
-        spark_session: pyspark.sql.SparkSession,
-    ) -> pyspark.sql.DataFrame:
+        spark_session: pyspark_sql.SparkSession,
+    ) -> pyspark_sql.DataFrame:
         """Executes the query and cleans up temp views."""
         try:
             df = spark_session.sql(query)
@@ -238,7 +238,7 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
         self, df,
         query: str,
         source: EngineAdapter = None,
-        spark_session: pyspark.sql.SparkSession = None,
+        spark_session: pyspark_sql.SparkSession = None,
         duckdb_conn: duckdb.DuckDBPyConnection = None,
         *args, **kwargs
     ):
@@ -255,7 +255,7 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
         """
         df = super().transform(df, *args, **kwargs)
 
-        if isinstance(df, pyspark.sql.DataFrame):
+        if isinstance(df, pyspark_sql.DataFrame):
             # The dependency injection pattern: use provided session or get the global one.
             spark = spark_session or SQLContextManager.get_instance().get_spark_session()
             spark_query, temp_views = self.__class__._prepare_spark_query(df, query, spark, source, **kwargs)
@@ -287,7 +287,7 @@ class Select(AbstractTransformerDecorator):
         """
         df = super().transform(df, *args, **kwargs)
 
-        if isinstance(df, pyspark.sql.DataFrame):
+        if isinstance(df, pyspark_sql.DataFrame):
             if len(exclude_fields) > 0:
                 df = df.drop(*exclude_fields)
             if len(include_fields) > 0:
@@ -318,7 +318,7 @@ class Copy(AbstractTransformerDecorator):
         """
         df = super().transform(df, *args, **kwargs)
 
-        if isinstance(df, pyspark.sql.DataFrame):
+        if isinstance(df, pyspark_sql.DataFrame):
             df = df.withColumns({k: col(v) for k, v in field_mapping.items()})
         elif isinstance(df, pd.DataFrame):
             col_map = case_insensitive_column_name_mapping(df)
@@ -339,7 +339,7 @@ class Literal(AbstractTransformerDecorator):
                   *args, **kwargs):
         df = super().transform(df, *args, **kwargs)
 
-        if isinstance(df, pyspark.sql.DataFrame):
+        if isinstance(df, pyspark_sql.DataFrame):
             df = df.withColumn(as_column, self.build_spark_instance(data_type, data_type_params, default_value))
         elif isinstance(df, pd.DataFrame):
             df[as_column] = default_value
@@ -395,7 +395,7 @@ class CurrentTimestamp(AbstractTransformerDecorator):
     def transform(self, df, as_column: str, *args, **kwargs):
         df = super().transform(df, *args, **kwargs)
 
-        if isinstance(df, pyspark.sql.DataFrame):
+        if isinstance(df, pyspark_sql.DataFrame):
             df = df.withColumn(as_column, current_timestamp())
         elif isinstance(df, pd.DataFrame):
             df[as_column] = pd.Timestamp.now()

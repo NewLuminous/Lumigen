@@ -1,6 +1,7 @@
 import copy
 import typing as t
 from collections import UserDict
+from collections.abc import MutableSet
 from functools import reduce
 
 
@@ -28,6 +29,79 @@ def rename_key(data, key_change_dict):
         if key in key_change_dict:
             data[key_change_dict[key]] = data.pop(key)
     return data
+
+class FallbackSet(MutableSet):
+    """
+    A set-like object with a prioritized key lookup strategy.
+
+    When checking for membership or getting an item, it follows this order:
+    1. Exact, case-sensitive match.
+    2. All-uppercase match.
+    3. Case-insensitive match (based on the first version of the item added).
+    """
+    def __init__(self, initial: t.Iterable[str] = None):
+        self._data: t.Set[str] = set()
+        self._map: t.Dict[str, str] = {}
+        
+        if initial is not None:
+            for item in initial:
+                self.add(item)
+
+    def _find_actual_item(self, item: str) -> t.Optional[str]:
+        """
+        Internal helper to find the stored item using the fallback logic.
+        Returns the actual stored string or None if not found.
+        """
+        # 1. Exact match
+        if item in self._data:
+            return item
+        
+        # 2. All-uppercase match
+        upper_item = item.upper()
+        if upper_item in self._data:
+            return upper_item
+            
+        # 3. Case-insensitive match
+        lower_item = item.lower()
+        if lower_item in self._map:
+            return self._map[lower_item]
+        
+        return None
+
+    def get(self, item: str, default: t.Optional[str] = None) -> t.Optional[str]:
+        found_item = self._find_actual_item(str(item))
+        return found_item if found_item is not None else default
+
+    def __contains__(self, item: object) -> bool:
+        """Checks for item existence using the `in` operator."""
+        return self._find_actual_item(str(item)) is not None
+
+    def add(self, item: str):
+        item_str = str(item)
+        lower_item = item_str.lower()
+        
+        if lower_item not in self._map:
+            self._data.add(item_str)
+            self._map[lower_item] = item_str
+
+    def discard(self, item: str):
+        """Removes an item from the set if it is present."""
+        item_to_remove = self._find_actual_item(str(item))
+        
+        if item_to_remove:
+            self._data.discard(item_to_remove)
+            del self._map[item_to_remove.lower()]
+
+    def __iter__(self) -> t.Iterator[str]:
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+    
+    def __repr__(self) -> str:
+        if not self._data:
+            return "FallbackSet()"
+        return f"FallbackSet({list(self._data)})"
 
 class FallbackKeyDict(UserDict):
     """

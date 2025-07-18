@@ -27,8 +27,8 @@ from sqlmesh.core.engine_adapter.shared import (
 from sqlmesh.core.schema_diff import SchemaDiffer
 
 if t.TYPE_CHECKING:
-    from sqlmesh.core._typing import SchemaName, TableName
-    from sqlmesh.core.engine_adapter.base import QueryOrDF, DF
+    from core._typing import SchemaName, TableName
+    from sqlmesh.core.engine_adapter.base import QueryOrDF
 
 from core.engine_adapter.mixins import EngineAdapterMixin, FetchBatchMixin
 from utils.dataset import DataFrameConverter

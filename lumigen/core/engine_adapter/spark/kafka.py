@@ -1,9 +1,6 @@
 from __future__ import annotations
-
 import typing as t
-
 import logging
-import pyspark
 from sqlglot import exp
 
 from sqlmesh.core.engine_adapter.shared import (
@@ -11,7 +8,7 @@ from sqlmesh.core.engine_adapter.shared import (
 )
 
 if t.TYPE_CHECKING:
-    from sqlmesh.core._typing import DF
+    from core._typing import DataFrameType
 
 from utils.errors import EngineAdapterError
 from core.engine_adapter.spark.base import SparkEngineAdapter
@@ -27,7 +24,7 @@ class SparkKafkaEngineAdapter(SparkEngineAdapter, FetchStreamMixin):
     def replace_query(
         self,
         topic: str,
-        df: DF,
+        df: DataFrameType,
         **kwargs: t.Any,
     ) -> None:
         from confluent_kafka.admin import AdminClient
@@ -49,7 +46,7 @@ class SparkKafkaEngineAdapter(SparkEngineAdapter, FetchStreamMixin):
     def insert_append(
         self,
         topic: str,
-        df: DF,
+        df: DataFrameType,
         **kwargs: t.Any,
     ) -> None:
         if df.isStreaming:

@@ -6,16 +6,16 @@ import typing as t
 
 import logging
 import pandas as pd
-import pyspark
+import pyspark.sql
 import time
 from sqlglot import exp
 from sqlglot.optimizer.qualify_columns import quote_identifiers
 
 if t.TYPE_CHECKING:
-    from sqlmesh.core._typing import DF
+    from core._typing import DataFrameType
 
+from core.config.connection import ConsoleConfig
 from core.engine_adapter.mixins import EngineAdapterMixin, FetchBatchMixin
-from engines.fake import FakeConnection
 from utils.dataset import DataFrameConverter
 
 logger = logging.getLogger(__name__)
@@ -29,11 +29,11 @@ class FakeEngineAdapter(FetchBatchMixin, EngineAdapterMixin):
     ) -> pyspark.sql.DataFrame:
         return DataFrameConverter.to_spark(self.fetchdf(query))
     
-    def replace_query(self, table_name, df: DF, **kwargs: t.Any) -> None:
+    def replace_query(self, table_name, df: DataFrameType, **kwargs: t.Any) -> None:
         self.insert_append(table_name, df)
 
-    def insert_append(self, table_name, df: DF, **kwargs: t.Any) -> None:
-        conn = t.cast(FakeConnection, self.connection)
+    def insert_append(self, table_name, df: DataFrameType, **kwargs: t.Any) -> None:
+        conn = t.cast(ConsoleConfig, self.connection)
         if not conn.print_data:
             return
         last_print_ts = getattr(self, "last_print_ts", 0)
@@ -63,7 +63,7 @@ class FakeEngineAdapter(FetchBatchMixin, EngineAdapterMixin):
         
         self.last_print_ts = time.time()
 
-    def merge(self, target_table, df: DF, *args, **kwargs) -> None:
+    def merge(self, target_table, df: DataFrameType, *args, **kwargs) -> None:
         self.insert_append(target_table, df)
 
     def ping(self) -> None: ...

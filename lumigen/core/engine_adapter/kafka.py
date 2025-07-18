@@ -16,9 +16,10 @@ import numpy as np
 from confluent_kafka import KafkaException
 
 if t.TYPE_CHECKING:
-    from sqlmesh.core._typing import DF
+    from core._typing import DataFrameType
 
 from core.engine_adapter.mixins import EngineAdapterMixin, FetchStreamMixin
+from utils import FallbackSet
 from utils.errors import EngineAdapterError, MissingColumnError
 
 logger = logging.getLogger(__name__)
@@ -32,7 +33,7 @@ class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin):
         topic: t.Union[exp.Expression, str],
         batch_size: int = None,
         quote_identifiers: bool = False,
-    ) -> t.Iterator[DF]:
+    ) -> t.Iterator[DataFrameType]:
         batches = self.fetchbatch(topic, batch_size, quote_identifiers=quote_identifiers)
         for batch in batches:
             logger.info(f"Fetched {len(batch)} Kafka messages")
@@ -92,7 +93,7 @@ class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin):
     def replace_query(
         self,
         topics: str, # List of topics separated by comma
-        df: DF,
+        df: DataFrameType,
         **kwargs: t.Any,
     ) -> None:
         topic_list = [tn.strip() for tn in topics.split(',')]
@@ -112,7 +113,7 @@ class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin):
     def insert_append(
         self,
         topics: str, # List of topics separated by comma
-        df: DF,
+        df: DataFrameType,
         **kwargs: t.Any,
     ) -> None:
         def delivery_report(err, msg):
@@ -120,14 +121,15 @@ class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin):
                 logger.debug(f"Message delivery failed: {err}")
 
         topic_list = [tn.strip() for tn in topics.split(',')]
-        if "value" not in df.columns:
+        df_case_insens_cols = FallbackSet(df.columns)
+        if "value" not in df_case_insens_cols:
             raise MissingColumnError("Column named `value` is required in the input DataFrame.")
         
-        if "key" in df.columns:
-            keys = df["key"].map(bytes, na_action="ignore").replace(np.nan, None)
+        if "key" in df_case_insens_cols:
+            keys = df[df_case_insens_cols.get("key")].map(bytes, na_action="ignore").replace(np.nan, None)
         else:
             keys = [None] * len(df)
-        values = df["value"].map(bytes, na_action="ignore").replace(np.nan, None)
+        values = df[df_case_insens_cols.get("value")].map(bytes, na_action="ignore").replace(np.nan, None)
         with self.transaction():
             for topic in topic_list:
                 for key, value in zip(keys, values):

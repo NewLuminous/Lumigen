@@ -1,5 +1,5 @@
 import typing as t
-import pyspark
+import pyspark.sql
 import pandas as pd
 from abc import abstractmethod
 

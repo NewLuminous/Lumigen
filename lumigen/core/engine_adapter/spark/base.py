@@ -3,7 +3,6 @@ from __future__ import annotations
 import typing as t
 
 import logging
-import pyspark
 
 import sqlmesh
 from sqlmesh.core.engine_adapter.shared import (
@@ -13,8 +12,7 @@ from sqlmesh.core.engine_adapter.shared import (
 )
 
 if t.TYPE_CHECKING:
-    from sqlmesh.core._typing import TableName, DF
-    from sqlmesh.core.engine_adapter.base import QueryOrDF
+    from core._typing import TableName
 
 from core.engine_adapter.mixins import EngineAdapterMixin
 

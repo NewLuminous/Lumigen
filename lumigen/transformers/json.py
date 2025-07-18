@@ -1,11 +1,15 @@
+from __future__ import annotations
 import typing as t
 
 from collections import OrderedDict
-import pyspark
+import pyspark.sql
 from pyspark.sql.functions import col, from_json, coalesce
 from pyspark.sql.types import StructType, StructField
 import pandas as pd
 from sqlglot import exp
+
+if t.TYPE_CHECKING:
+    from core._typing import DataFrameType
 
 from transformers.base import AbstractTransformerDecorator
 from transformers.sql import Literal
@@ -17,7 +21,7 @@ class JSONFlattener(AbstractTransformerDecorator):
     spark_struct: StructType = None
     columns_to_types: t.Dict[str, exp.DataType] = None
 
-    def transform(self, df, column: str, schema_type: t.List[t.Dict[str, t.Any]], in_place: bool=True, *args, **kwargs):
+    def transform(self, df: DataFrameType, column: str, schema_type: t.List[t.Dict[str, t.Any]], in_place: bool=True, *args, **kwargs):
         """
         Flatten a column in JSON format. Only one level of nesting is removed.
 

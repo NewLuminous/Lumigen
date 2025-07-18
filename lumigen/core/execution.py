@@ -6,10 +6,11 @@ from sqlglot import exp
 from sqlmesh.core.engine_adapter.base import (
     EngineAdapter, MERGE_SOURCE_ALIAS, MERGE_TARGET_ALIAS
 )
-from utils import merge_dicts, FallbackKeyDict
+from utils import merge_dicts, FallbackSet
 from utils.dataset import columns_to_types_from_df, get_columns_name
 from utils.parsing import dialect_insensitive_tbl_name
 from core.config.job import TransformationConfig, DataSaveMode, JobSinkRelatedFields
+from core.job_context import JobContext
 from transformers import transformer_factory, TransformationPipeline
 
 
@@ -26,18 +27,21 @@ def transform_data(transformation_pipeline: t.List[TransformationConfig], job_pr
 
     return trans_chain
 
-def write_data(dataset, t_chain: TransformationPipeline, writer: EngineAdapter, job_props: dict):
-    sink_table = JobSinkRelatedFields(**job_props).get_sink_path()
+def write_data(dataset, t_chain: TransformationPipeline, context: JobContext):
+    writer = MicroBatchWriter(context.sink_adapter)
+    sink_table = context.job_props_model.get_sink_path()
     sink_table = dialect_insensitive_tbl_name(sink_table, writer.dialect)
-    writer = MicroBatchWriter(writer)
 
-    data_save_mode = job_props.get("data_save_mode", DataSaveMode.OVERWRITE)
+    data_save_mode = context.job_props_model.data_save_mode
     if data_save_mode == DataSaveMode.OVERWRITE:
-        t_chain.add(writer.replace_query, [sink_table], [], job_props.get("replace_query_kwargs", {}))
+        t_chain.add(writer.replace_query, [sink_table],
+                    [], context.job_props_model.replace_query_kwargs or {})
     elif data_save_mode == DataSaveMode.APPEND:
         t_chain.add(writer.insert_append, [sink_table])
     elif data_save_mode == DataSaveMode.MERGE:
-        t_chain.add(writer.merge, [sink_table], [job_props["key"]], {"when_matched_filter": job_props.get("when_matched_filter")})
+        t_chain.add(writer.merge, [sink_table],
+                    [context.job_props_model.sink_key],
+                    {"when_matched_filter": context.job_props_model.when_matched_filter})
     elif data_save_mode == DataSaveMode.ERROR_IF_EXISTS:
         raise NotImplementedError(f"{DataSaveMode.ERROR_IF_EXISTS} not implemented.") # TODO
     else:
@@ -49,6 +53,7 @@ def write_data(dataset, t_chain: TransformationPipeline, writer: EngineAdapter, 
 class MicroBatchWriter:
     def __init__(self, base_writer: EngineAdapter):
         self.base = base_writer
+        self.dialect = self.base.dialect
         self.batch_id = 0
         self._columns_to_types = None
 
@@ -92,15 +97,13 @@ class MicroBatchWriter:
         if self._columns_to_types is None:
             if table_name and self.base.table_exists(table_name):
                 table_columns = self.base.columns(table_name)
-                col_map = FallbackKeyDict()
-                for c in table_columns:
-                    col_map[c] = c
+                tbl_col_set = FallbackSet(table_columns)
 
                 # Must match the order of columns in the data frame to map correctly
                 self._columns_to_types = OrderedDict()
                 df_columns = get_columns_name(df)
                 for df_col in df_columns:
-                    tbl_col = col_map[df_col]
+                    tbl_col = tbl_col_set.get(df_col)
                     if tbl_col in table_columns:
                         self._columns_to_types[tbl_col] = table_columns[tbl_col]
             else:

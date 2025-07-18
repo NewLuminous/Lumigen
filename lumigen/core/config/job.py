@@ -136,7 +136,7 @@ class JobSinkRelatedFields(BaseModel):
     """The identifier for the data destination (can be a table, collection, topic, etc.)."""
     data_save_mode: t.Optional[DataSaveMode] = DataSaveMode.APPEND
     """Supported processing schemes for saving data. See `DataSaveMode` enum for options."""
-    key: t.Optional[t.List[str]] = None
+    sink_key: t.Optional[t.List[str]] = None
     """List of columns as unique key for upsert operations."""
     when_matched_filter: t.Optional[str] = None
     """`WHEN MATCHED AND {condition} THEN` in merge operation."""
@@ -149,6 +149,17 @@ class JobSinkRelatedFields(BaseModel):
         "sink_collection",
         "sink_topic",
     }
+
+    @field_validator("sink_key", mode="before")
+    @classmethod
+    def _normalize_sink_key_to_list(cls, v: t.Any) -> t.Optional[list[str]]:
+        """
+        Allows sink_key to be provided as a single string (including comma-separated)
+        and normalizes it into a list of strings.
+        """
+        if isinstance(v, str):
+            return [key.strip() for key in v.split(',')]
+        return v
 
     @model_validator(mode='before')
     @classmethod
@@ -176,17 +187,14 @@ class JobSinkRelatedFields(BaseModel):
             data['sink_path'] = value
         
         return data
-
-    @model_validator(mode="after")
-    def _check_sink_mutually_exclusive_fields(self) -> "JobSinkRelatedFields":
-        mutually_excl_set = {"sink_table", "sink_topic"}
-        provided_fields = sorted([
-            f for f in mutually_excl_set if getattr(self, f, None) is not None
-        ])
-        if len(provided_fields) > 1:
-            raise ValueError(
-                f"Cannot set both sink properties '{provided_fields[0]}' and '{provided_fields[1]}'."
-            )
+    
+    @model_validator(mode='after')
+    def _validate_merge_requires_key(self) -> "JobSinkRelatedFields":
+        if self.data_save_mode == DataSaveMode.MERGE:
+            if not self.sink_key:
+                raise ValueError(
+                    "`sink_key` must be provided when `data_save_mode` is 'MERGE'."
+                )
         return self
     
     def get_sink_path(self):

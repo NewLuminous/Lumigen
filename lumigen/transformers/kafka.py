@@ -1,12 +1,16 @@
+from __future__ import annotations
 import typing as t
 
 import json
-import pyspark
+import pyspark.sql
 from pyspark.sql.functions import col, coalesce, from_json, row_number, when
 from pyspark.sql.window import Window
 from pyspark.sql.types import StructType, StructField, StringType, LongType
 import numpy as np
 import pandas as pd
+
+if t.TYPE_CHECKING:
+    from core._typing import DataFrameType
 
 from transformers.base import AbstractTransformerDecorator
 from utils.errors import MissingColumnError, UnsupportedDataFrameError
@@ -73,7 +77,7 @@ class DebeziumParser(AbstractTransformerDecorator):
 
         return df
     
-    def inline(self, df):
+    def inline(self, df: DataFrameType):
         if "value" not in df.columns:
             raise MissingColumnError("Column `value` is required.")
 
@@ -122,7 +126,7 @@ class DebeziumParser(AbstractTransformerDecorator):
     
 
 class CDCDeduplicator(AbstractTransformerDecorator):
-    def transform(self, df, key: t.List[str], priority: t.Optional[str]="ts_ms", *args, **kwargs):
+    def transform(self, df: DataFrameType, key: t.List[str], priority: t.Optional[str]="ts_ms", *args, **kwargs):
         """
         Parameters
         ----------

@@ -30,7 +30,7 @@ class JobRunner(ABC):
         with self.context_builder.build() as job_context:
             lazy_dataset = self._read_data(job_context)
             trans_chain = transform_data(self.config.transformation_pipeline, job_context.job_props)
-            write_data(lazy_dataset, trans_chain, job_context.sink_adapter, job_context.job_props)
+            write_data(lazy_dataset, trans_chain, job_context)
         return 0
 
     @abstractmethod

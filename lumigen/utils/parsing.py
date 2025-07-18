@@ -4,7 +4,7 @@ import re
 from sqlglot import exp, parse_one
 
 if t.TYPE_CHECKING:
-    from sqlmesh.core._typing import TableName
+    from core._typing import TableName
 
 
 def extract_params(string: str) -> t.List[str]:

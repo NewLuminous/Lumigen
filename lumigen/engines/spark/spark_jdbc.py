@@ -1,9 +1,12 @@
+from __future__ import annotations
 import typing as t
 
 from pyspark.sql import SparkSession
 from pyspark.conf import SparkConf
 
-from core.config.connection import ConnectionConfig
+if t.TYPE_CHECKING:
+    from core.config.connection import ConnectionConfig
+
 from core.engine_context import SQLContextManager
 from engines.spark.errors import NotSupportedError
 from engines.spark.spark_session import SparkSessionCursor, SparkSessionConnection
@@ -14,12 +17,12 @@ class SparkJDBCCursor(SparkSessionCursor):
         "mssql", "mysql", "oracle", "postgres"
     }
 
-    def __init__(self, spark: SparkSession, connection_config: ConnectionConfig):
+    def __init__(self, spark: SparkSession, connection_config: "ConnectionConfig"):
         super().__init__(spark)
         self.jdbc_options = self._jdbc_options_factory(connection_config)
 
     @classmethod
-    def _jdbc_options_factory(cls, connection_config: ConnectionConfig):
+    def _jdbc_options_factory(cls, connection_config: "ConnectionConfig"):
         c = connection_config
         if c.type_ == "oracle":
             connect_string = f"jdbc:oracle:thin:@{c.host}:{c.port}/{c.service_name or c.sid}"
@@ -57,7 +60,7 @@ class SparkJDBCCursor(SparkSessionCursor):
 
 
 class SparkJDBCConnection(SparkSessionConnection):
-    def __init__(self, spark: SparkSession, connection_config: ConnectionConfig, catalog: t.Optional[str] = None):
+    def __init__(self, spark: SparkSession, connection_config: "ConnectionConfig", catalog: t.Optional[str] = None):
         super().__init__(spark, catalog)
         self.connection_config = connection_config
         self.engine_adapter = connection_config.create_engine_adapter()
@@ -67,7 +70,7 @@ class SparkJDBCConnection(SparkSessionConnection):
         return SparkJDBCCursor(self.spark, self.connection_config)
 
 
-def connection(app_name: t.Optional[str], conf: SparkConf, connection_config: ConnectionConfig,
+def connection(app_name: t.Optional[str], conf: SparkConf, connection_config: "ConnectionConfig",
                catalog: t.Optional[str] = None,
                hive_support: t.Optional[bool] = True,
                ) -> SparkJDBCConnection:
