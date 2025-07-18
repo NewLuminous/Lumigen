@@ -1,7 +1,6 @@
 import typing as t
 import sys
-from sqlglot import exp, parse_one
-from sqlglot.dialects.dialect import Dialects
+from sqlglot import exp, parse_one, Dialects
 from sqlglot.errors import ParseError
 import pyspark
 from pyspark.sql.functions import col, current_timestamp, lit, array, create_map

@@ -12,6 +12,7 @@ from sqlmesh.core.engine_adapter.shared import (
     DataObjectType,
 )
 import pandas as pd
+import numpy as np
 from confluent_kafka import KafkaException
 
 if t.TYPE_CHECKING:
@@ -122,8 +123,11 @@ class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin):
         if "value" not in df.columns:
             raise MissingColumnError("Column named `value` is required in the input DataFrame.")
         
-        keys = df["key"].map(bytes, na_action="ignore") if "key" in df.columns else [None] * len(df)
-        values = df["value"].map(bytes, na_action="ignore")
+        if "key" in df.columns:
+            keys = df["key"].map(bytes, na_action="ignore").replace(np.nan, None)
+        else:
+            keys = [None] * len(df)
+        values = df["value"].map(bytes, na_action="ignore").replace(np.nan, None)
         with self.transaction():
             for topic in topic_list:
                 for key, value in zip(keys, values):

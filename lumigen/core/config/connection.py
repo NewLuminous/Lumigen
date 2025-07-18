@@ -323,7 +323,7 @@ class MSSQLConnectionConfig(ConnectionConfig):
 
 class KafkaConnectionConfig(ConnectionConfig):
     bootstrap_servers: str
-    group_id: str
+    group_id: t.Optional[str] = None
     starting_mode: t.Optional[str] = "earliest"
     config: t.Optional[t.Dict[str, t.Any]] = {}
 

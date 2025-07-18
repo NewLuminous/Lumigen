@@ -4,6 +4,7 @@ import typing as t
 import re
 import json
 import time
+import uuid
 from collections import OrderedDict
 from confluent_kafka import Consumer, Producer, Message, TopicPartition
 from confluent_kafka.admin import AdminClient
@@ -146,30 +147,38 @@ class KafkaClientCursor:
         for batch in self.fetchstream(size=size):
             yield DataFrame(batch, columns=list(KafkaClientCursor.MESSAGE_SCHEMA.keys()))
 
+def _generate_unique_id(prefix: str="lumigen") -> str:
+    return f"{prefix}-{uuid.uuid4()}"
 
 class KafkaClientConnection:
-    def __init__(self, bootstrap_servers: str, group_id: str, starting_mode: t.Optional[str] = "earliest", config: t.Optional[t.Dict[str, t.Any]] = {}):
+    _SHARED_RANDOM_GROUP_ID = _generate_unique_id()
+
+    def __init__(self, bootstrap_servers: str,
+                 group_id: t.Optional[str] = None, starting_mode: t.Optional[str] = "earliest", config: t.Optional[t.Dict[str, t.Any]] = {}):
         self.bootstrap_servers = bootstrap_servers
-        self.group_id = group_id
+        self.group_id = group_id or KafkaClientConnection._SHARED_RANDOM_GROUP_ID
+        self.transactional_id = group_id or _generate_unique_id()
         self.starting_mode = starting_mode
         self.config = config
         self.admin = AdminClient({
             'bootstrap.servers': bootstrap_servers
         })
         
-        consumer_config = merge_dicts({
+        consumer_config = {
             'bootstrap.servers': bootstrap_servers,
-            'group.id': group_id,
+            'group.id': self.group_id,
             'auto.offset.reset': starting_mode,
-            'enable.auto.commit': False
-        }, config)
+            'enable.auto.commit': False,
+        }
+        consumer_config = merge_dicts(consumer_config, config)
         logger.info("Consumer configuration: \n" + json.dumps(consumer_config, indent=2))
         self.consumer = Consumer(consumer_config)
 
-        producer_config = merge_dicts({
+        producer_config = {
             'bootstrap.servers': bootstrap_servers,
-            'transactional.id': group_id
-        }, config)
+            'transactional.id': self.transactional_id,
+        }
+        producer_config = merge_dicts(producer_config, config)
         logger.info("Producer configuration: \n" + json.dumps(producer_config, indent=2))
         self.producer = Producer(producer_config)
         self.producer.init_transactions()
@@ -214,5 +223,6 @@ class KafkaClientConnection:
         logger.info("Consumer terminated.")
 
 
-def connection(bootstrap_servers: str, group_id: str, starting_mode: t.Optional[str] = "earliest", config: t.Optional[t.Dict[str, t.Any]] = {}) -> KafkaClientConnection:
+def connection(bootstrap_servers: str,
+               group_id: t.Optional[str] = None, starting_mode: t.Optional[str] = "earliest", config: t.Optional[t.Dict[str, t.Any]] = {}) -> KafkaClientConnection:
     return KafkaClientConnection(bootstrap_servers, group_id, starting_mode, config)

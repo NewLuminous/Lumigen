@@ -3,7 +3,7 @@ from __future__ import annotations
 import typing as t
 from pydantic import ValidationError, BaseModel
 from enum import Enum
-from sqlglot import exp
+from sqlglot import exp, Dialect
 from sqlglot.errors import ParseError
 from sqlmesh.core.config.base import BaseConfig
 from sqlmesh.utils.pydantic import model_validator, field_validator
@@ -120,11 +120,11 @@ class JobSourceRelatedFields(BaseModel):
             return self.source_query
         
         if self.source_path:
-            try:
+            if Dialect.get(dialect):
                 return exp.select('*').from_(exp.to_table(
                     dialect_insensitive_tbl_name(self.source_path, dialect)
                 ))
-            except ParseError:
+            else:
                 return exp.select('*').from_(exp.to_identifier(
                     self.source_path, quoted=True
                 )).sql()
