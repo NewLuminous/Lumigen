@@ -2,8 +2,11 @@ from __future__ import annotations
 import typing as t
 from functools import partial
 import logging
-from sqlmesh.core.engine_adapter.base import EngineAdapter
-from core.config.connection import ConnectionConfig, KafkaConnectionConfig
+
+if t.TYPE_CHECKING:
+    from sqlmesh.core.engine_adapter.base import EngineAdapter
+    from core.config.connection import ConnectionConfig, KafkaConnectionConfig
+
 from core.engine_adapter import SparkJDBCEngineAdapter, SparkKafkaEngineAdapter
 from utils.errors import ConfigError
 

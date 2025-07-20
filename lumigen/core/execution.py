@@ -6,11 +6,14 @@ from sqlglot import exp
 from sqlmesh.core.engine_adapter.base import (
     EngineAdapter, MERGE_SOURCE_ALIAS, MERGE_TARGET_ALIAS
 )
+
+if t.TYPE_CHECKING:
+    from core.job_context import JobContext
+
 from utils import merge_dicts, FallbackSet
 from utils.dataset import columns_to_types_from_df, get_columns_name
 from utils.parsing import dialect_insensitive_tbl_name
-from core.config.job import TransformationConfig, DataSaveMode, JobSinkRelatedFields
-from core.job_context import JobContext
+from core.config.job import TransformationConfig, DataSaveMode
 from transformers import transformer_factory, TransformationPipeline
 
 

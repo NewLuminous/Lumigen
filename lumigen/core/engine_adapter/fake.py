@@ -1,7 +1,6 @@
 """Contains FakeEngineAdapter."""
 
 from __future__ import annotations
-
 import typing as t
 
 import logging
@@ -13,8 +12,8 @@ from sqlglot.optimizer.qualify_columns import quote_identifiers
 
 if t.TYPE_CHECKING:
     from core._typing import DataFrameType
+    from core.config.connection import ConsoleConfig
 
-from core.config.connection import ConsoleConfig
 from core.engine_adapter.mixins import EngineAdapterMixin, FetchBatchMixin
 from utils.dataset import DataFrameConverter
 
@@ -33,7 +32,7 @@ class FakeEngineAdapter(FetchBatchMixin, EngineAdapterMixin):
         self.insert_append(table_name, df)
 
     def insert_append(self, table_name, df: DataFrameType, **kwargs: t.Any) -> None:
-        conn = t.cast(ConsoleConfig, self.connection)
+        conn = t.cast("ConsoleConfig", self.connection)
         if not conn.print_data:
             return
         last_print_ts = getattr(self, "last_print_ts", 0)

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import typing as t
-from pydantic import ValidationError, BaseModel
+from pydantic import BaseModel, model_validator, field_validator, ValidationError, constr
 from enum import Enum
-from sqlglot import exp, Dialect
-from sqlglot.errors import ParseError
+from sqlglot import exp
 from sqlmesh.core.config.base import BaseConfig
-from sqlmesh.utils.pydantic import model_validator, field_validator
 
 from utils.parsing import dialect_insensitive_tbl_name, extract_main_table
 from utils.errors import ConfigError
@@ -34,6 +32,20 @@ class JobMode(str, Enum):
             return cls.BATCH
 
 
+class DataLoadMode(str, Enum):
+    """Specifies the data loading strategy from the source.
+
+    Options include:
+    * `FULL`: Processes the entire dataset from the source in every run.
+    * `INCREMENTAL`: Processes only new or changed data since the last run.
+    """
+    FULL = "FULL"
+    INCREMENTAL = "INCREMENTAL"
+
+    def __str__(self) -> str:
+        return self.value
+
+
 class DataSaveMode(str, Enum):
     """Supported processing schemes for saving data.
 
@@ -50,6 +62,9 @@ class DataSaveMode(str, Enum):
     ERROR_IF_EXISTS = "ERROR_IF_EXISTS"
     IGNORE = "IGNORE"
 
+    def __str__(self) -> str:
+        return self.value
+
 
 def normalize_topic_list_to_str_validator(v: t.Any) -> t.Any:
     if isinstance(v, list):
@@ -61,6 +76,10 @@ class JobSourceRelatedFields(BaseModel):
     """The identifier for the data source (can be a table, collection, topic, etc.)."""
     source_query: t.Optional[str] = None
     """The query to extract data from the data source."""
+    data_load_mode: t.Optional[DataLoadMode] = DataLoadMode.FULL
+    """The data loading strategy from the source (FULL or INCREMENTAL)."""
+    source_watermark: t.Optional[str] = None
+    """The column used to identify new or changed data for INCREMENTAL loads."""
     source_batch_size: t.Optional[int] = None
     """The number of rows to fetch from the data source per round trip."""
     source_limit: t.Optional[int] = None
@@ -120,14 +139,9 @@ class JobSourceRelatedFields(BaseModel):
             return self.source_query
         
         if self.source_path:
-            if Dialect.get(dialect):
-                return exp.select('*').from_(exp.to_table(
-                    dialect_insensitive_tbl_name(self.source_path, dialect)
-                ))
-            else:
-                return exp.select('*').from_(exp.to_identifier(
-                    self.source_path, quoted=True
-                )).sql()
+            return exp.select('*').from_(exp.to_table(
+                dialect_insensitive_tbl_name(self.source_path, dialect)
+            ))
         
         return None
     
@@ -192,9 +206,7 @@ class JobSinkRelatedFields(BaseModel):
     def _validate_merge_requires_key(self) -> "JobSinkRelatedFields":
         if self.data_save_mode == DataSaveMode.MERGE:
             if not self.sink_key:
-                raise ValueError(
-                    "`sink_key` must be provided when `data_save_mode` is 'MERGE'."
-                )
+                raise ValueError(f"`sink_key` must be provided when `data_save_mode` is '{DataSaveMode.MERGE}'.")
         return self
     
     def get_sink_path(self):
@@ -212,10 +224,19 @@ class JobPropertiesModel(
     JobSinkRelatedFields,
     SeaTunnelFields
 ):
+    job_id: t.Optional[t.Annotated[str, constr(strip_whitespace=True, min_length=1)]] = None
+    """A unique, stable, and human-readable identifier for this job."""
     job_mode: t.Optional[JobMode] = JobMode.BATCH
     """Whether the task is in BATCH or STREAMING mode."""
     spark_submit_options: t.Optional[t.Dict[str, StringOrInt]] = {}
     """A dictionary of parameters when submitting a Spark application using the `spark-submit` command."""
+
+    @model_validator(mode='after')
+    def _validate_incremental_requires_job_id(self) -> "JobPropertiesModel":
+        if self.data_load_mode == DataLoadMode.INCREMENTAL:
+            if not self.job_id:
+                raise ValueError(f"`job_id` must be provided when `data_load_mode` is '{DataLoadMode.INCREMENTAL}'.")
+        return self
     
 def job_properties_validator(value: t.Dict[str, t.Any]) -> t.Dict[str, t.Any]:
     if not isinstance(value, dict):

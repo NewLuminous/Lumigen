@@ -12,7 +12,6 @@ from pandas import DataFrame
 from sqlglot import exp
 
 from utils import merge_dicts
-from utils.parsing import extract_main_table
 
 logger = logging.getLogger(__name__)
 
@@ -37,14 +36,11 @@ class KafkaClientCursor:
         self._no_msg_cnt = 0
         self._no_msg_log_interval = 3600
 
-    def execute(self, query: str, parameters: t.Optional[t.Any] = None) -> None:
-        try:
-            topics = extract_main_table(query, quoted=False)
-        except:
-            topics = query
-        topic_list = [tn.strip() for tn in topics.split(',')]
-        self._consumer.subscribe(topic_list)
-        self._topic_patterns = topic_list
+    def execute(self, json_query: str, parameters: t.Optional[t.Any] = None) -> None:
+        query: dict = json.loads(json_query)
+        topics = query.get("topics", [])
+        self._consumer.subscribe(topics)
+        self._topic_patterns = topics
         logger.info("Subscribed to topic(s): " + ", ".join(self.subscriptions))
 
     @property

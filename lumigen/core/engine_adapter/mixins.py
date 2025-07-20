@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import logging
 import typing as t
+from abc import ABC, abstractmethod
 import re
 from sqlglot import exp
 from sqlmesh.core.engine_adapter.base import EngineAdapter
 from sqlmesh.core.engine_adapter.shared import DataObject
 
 if t.TYPE_CHECKING:
+    from core.config.job import DataLoadMode
     from sqlmesh.core.engine_adapter._typing import DF, Query
 
 from core.dialect import select_from_values_for_batch_range
@@ -23,21 +25,20 @@ class FetchBatchMixin(EngineAdapter):
         ignore_unsupported_errors: bool = False,
         quote_identifiers: bool = False,
     ) -> t.Iterator[t.List[t.Tuple]]:
-        with self.transaction():
-            self.execute(
-                query,
-                ignore_unsupported_errors=ignore_unsupported_errors,
-                quote_identifiers=quote_identifiers,
-            )
-            if batch_size:
-                while True:
-                    batch = self.cursor.fetchmany(batch_size)
-                    if not batch:
-                        break
+        self.execute(
+            query,
+            ignore_unsupported_errors=ignore_unsupported_errors,
+            quote_identifiers=quote_identifiers,
+        )
+        if batch_size:
+            while True:
+                batch = self.cursor.fetchmany(batch_size)
+                if not batch:
+                    break
 
-                    yield batch
-            else:
-                yield self.cursor.fetchall()
+                yield batch
+        else:
+            yield self.cursor.fetchall()
 
     def fetch_batch_df(
         self,
@@ -71,16 +72,15 @@ class FetchStreamMixin(FetchBatchMixin):
         ignore_unsupported_errors: bool = False,
         quote_identifiers: bool = False,
     ) -> t.Iterator[t.List[t.Tuple]]:
-        with self.transaction():
-            self.execute(
-                query,
-                ignore_unsupported_errors=ignore_unsupported_errors,
-                quote_identifiers=quote_identifiers,
-            )
-            if batch_size:
-                yield from self.cursor.fetchstream(batch_size)
-            else:
-                yield from self.cursor.fetchstream()
+        self.execute(
+            query,
+            ignore_unsupported_errors=ignore_unsupported_errors,
+            quote_identifiers=quote_identifiers,
+        )
+        if batch_size:
+            yield from self.cursor.fetchstream(batch_size)
+        else:
+            yield from self.cursor.fetchstream()
         return
 
     def fetch_stream_df(
@@ -89,15 +89,14 @@ class FetchStreamMixin(FetchBatchMixin):
         batch_size: int = None,
         quote_identifiers: bool = False,
     ) -> t.Iterator[DF]:
-        with self.transaction():
-            self.execute(
-                query,
-                quote_identifiers=quote_identifiers,
-            )
-            if batch_size:
-                yield from self.cursor.fetchstreamdf(batch_size)
-            else:
-                yield from self.cursor.fetchstreamdf()
+        self.execute(
+            query,
+            quote_identifiers=quote_identifiers,
+        )
+        if batch_size:
+            yield from self.cursor.fetchstreamdf(batch_size)
+        else:
+            yield from self.cursor.fetchstreamdf()
         return
     
 class EngineAdapterMixin(EngineAdapter):
@@ -150,3 +149,28 @@ class EngineAdapterMixin(EngineAdapter):
             batch_end=batch_end,
             alias=alias,
         )
+    
+class QueryBuilderMixin(ABC):
+    """
+    An abstract mixin for EngineAdapters that need to construct their own
+    engine-specific "query" from a source path.
+    """
+
+    @abstractmethod
+    def build_query(
+        self,
+        path: t.Optional[str] = None,
+        query: t.Optional[str] = None,
+        data_load_mode: t.Optional[DataLoadMode] = None,
+        watermark_column: t.Optional[str] = None,
+        last_watermark_value: t.Optional[t.Any] = None,
+        **kwargs: t.Any,
+    ) -> t.Any:
+        """
+        Constructs a query-like object suitable for the adapter's fetch methods.
+
+        Returns:
+            An object that the adapter's `fetchdf`, `fetch_pyspark_df`, etc., methods
+            can understand and execute.
+        """
+        pass

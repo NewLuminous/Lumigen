@@ -1,7 +1,8 @@
-import logging
 import typing as t
 
+import json
 from collections import OrderedDict
+import logging
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.conf import SparkConf
 from sqlglot import exp
@@ -9,7 +10,6 @@ from sqlglot import exp
 from core.engine_context import SQLContextManager
 from engines.spark.errors import NotSupportedError
 from engines.spark.spark_session import SparkSessionCursor, SparkSessionConnection
-from utils.parsing import extract_main_table
 
 logger = logging.getLogger(__name__)
 
@@ -55,16 +55,13 @@ class SparkKafkaCursor(SparkSessionCursor):
 
         return kafka_options
 
-    def execute(self, query: str, parameters: t.Optional[t.Any] = None) -> None:
+    def execute(self, json_query: str, parameters: t.Optional[t.Any] = None) -> None:
         if parameters:
             raise NotSupportedError("Parameterized queries are not supported")
         
-        try:
-            topic_pattern = extract_main_table(query, quoted=False)
-        except:
-            topic_pattern = query
-        
-        topic_pattern = '|'.join(f"({tn.strip()})" for tn in topic_pattern.split(','))
+        query: dict = json.loads(json_query)
+        topics = query.get("topics", [])
+        topic_pattern = '|'.join(f"({tn})" for tn in topics)
 
         self._last_df = self._spark.read.format("kafka") \
             .options(**self.kafka_options) \

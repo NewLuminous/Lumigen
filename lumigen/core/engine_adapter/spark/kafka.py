@@ -12,13 +12,13 @@ if t.TYPE_CHECKING:
 
 from utils.errors import EngineAdapterError
 from core.engine_adapter.spark.base import SparkEngineAdapter
-from core.engine_adapter.mixins import FetchStreamMixin
+from core.engine_adapter.kafka import KafkaEngineAdapter
 
 logger = logging.getLogger(__name__)
 
 
 @set_catalog()
-class SparkKafkaEngineAdapter(SparkEngineAdapter, FetchStreamMixin):
+class SparkKafkaEngineAdapter(SparkEngineAdapter, KafkaEngineAdapter):
     SUPPORTS_REPLACE_TABLE = True
 
     def replace_query(
@@ -63,11 +63,6 @@ class SparkKafkaEngineAdapter(SparkEngineAdapter, FetchStreamMixin):
             
     def merge(self, *args, **kwargs) -> None:
         raise EngineAdapterError("Unsupported MERGE operation for Kafka sinks.")
-    
-    def columns(
-        self, topics: str, include_pseudo_columns: bool = False
-    ) -> t.Dict[str, exp.DataType]:
-        return self.cursor.MESSAGE_SCHEMA
 
     def table_exists(self, topics: str) -> bool:
         return None # TODO

@@ -1,12 +1,16 @@
 from __future__ import annotations
 import typing as t
 from abc import ABC, abstractmethod
+from sqlglot import Dialect
 import logging
 from core.config.root import Config
 from core.config.connection import SparkConnectionConfig, SeaTunnelConnectorConfig
+from core.config.job import DataLoadMode
+from core.engine_adapter.mixins import QueryBuilderMixin
 from core.adapters import validate_connections
 from core.execution import transform_data, write_data
 from core.job_context import JobContext, JobContextBuilder
+from utils.errors import ConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +36,39 @@ class JobRunner(ABC):
             trans_chain = transform_data(self.config.transformation_pipeline, job_context.job_props)
             write_data(lazy_dataset, trans_chain, job_context)
         return 0
+    
+    def _get_source_query(self, context: JobContext) -> t.Any:
+        reader = context.source_adapter
+        job_props = context.job_props_model
+
+        last_watermark = None
+        if job_props.data_load_mode == DataLoadMode.INCREMENTAL:
+            last_watermark = context.audit_manager.get_high_watermark(job_props.job_id)
+
+        if isinstance(reader, QueryBuilderMixin):
+            # The adapter knows best how to build its query.
+            logger.debug(f"Adapter {reader.__class__.__name__} implements QueryBuilderMixin. Delegating query construction.")
+            return reader.build_query(
+                path=job_props.source_path,
+                query=job_props.source_query,
+                data_load_mode=job_props.data_load_mode,
+                watermark_column=job_props.source_watermark,
+                last_watermark_value=last_watermark,
+            )
+        
+        if Dialect.get(reader.dialect):
+            logger.debug(f"Adapter dialect '{reader.dialect}' is a known SQL dialect. Using generic expression builder.")
+            base_query = context.build_source_expression()
+
+            # TODO
+
+            return base_query
+
+        error_message = (
+            f"Engine Adapter '{reader.__class__.__name__}' has a non-standard dialect '{reader.dialect}' "
+            f"but does not implement the 'QueryBuilderMixin' to handle it."
+        )
+        raise ConfigError(error_message)
 
     @abstractmethod
     def _read_data(self, context: JobContext) -> t.Iterator[t.Any]:

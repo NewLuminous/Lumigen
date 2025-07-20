@@ -1,11 +1,15 @@
+from __future__ import annotations
 import typing as t
 import os
 import re
 import subprocess
 import tempfile
 import logging
+
+if t.TYPE_CHECKING:
+    from core.config.root import Config
+
 from config.environment import settings
-from core.config.root import Config
 from core.runner import JobRunner
 from utils import hocon
 from entry_points.launchers import submit_job

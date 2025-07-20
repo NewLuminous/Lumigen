@@ -1,12 +1,11 @@
 from __future__ import annotations
 import typing as t
 
-ContextType = t.TypeVar("ContextType", "duckdb.DuckDBPyConnection", "SparkSession")
-
-# To avoid circular imports, use string forward-references
 if t.TYPE_CHECKING:
     import duckdb
     from pyspark.sql import SparkSession
+
+ContextType = t.Union["SparkSession", "duckdb.DuckDBPyConnection"]
 
 
 class SQLFunctionMixin:

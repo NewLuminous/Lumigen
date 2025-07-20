@@ -1,10 +1,10 @@
 """Contains KafkaEngineAdapter."""
 
 from __future__ import annotations
-
 import typing as t
 
 import logging
+import json
 import contextlib
 from sqlglot import exp
 from sqlmesh.core.engine_adapter.shared import (
@@ -18,15 +18,41 @@ from confluent_kafka import KafkaException
 if t.TYPE_CHECKING:
     from core._typing import DataFrameType
 
-from core.engine_adapter.mixins import EngineAdapterMixin, FetchStreamMixin
+from core.config.job import DataLoadMode
+from core.engine_adapter.mixins import EngineAdapterMixin, FetchStreamMixin, QueryBuilderMixin
 from utils import FallbackSet
 from utils.errors import EngineAdapterError, MissingColumnError
+from utils.parsing import extract_main_table
 
 logger = logging.getLogger(__name__)
 
 
-class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin):
+class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin, QueryBuilderMixin):
     DIALECT: str = "kafka"
+
+    def build_query(
+        self,
+        path: t.Optional[str] = None,
+        query: t.Optional[str] = None,
+        data_load_mode: t.Optional[DataLoadMode] = None,
+        watermark_column: t.Optional[str] = None,
+        last_watermark_value: t.Optional[t.Any] = None, # TODO
+        **kwargs: t.Any,
+    ) -> t.Any:
+        if query:
+            try:
+                topics_str = extract_main_table(query, quoted=False)
+            except:
+                topics_str = query
+        if path:
+            topics_str = path
+
+        topics = [tp.strip() for tp in topics_str.split(',')]
+        
+        result = json.dumps({
+            "topics": topics
+        })
+        return result
 
     def fetch_batch_df(
         self,

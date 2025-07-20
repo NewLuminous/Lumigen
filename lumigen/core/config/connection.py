@@ -6,12 +6,12 @@ import os
 import sys
 import typing as t
 from functools import partial
-from pydantic import Field
+from pydantic import Field, field_validator
 from sqlglot.helper import subclasses
 from sqlmesh.core.config.base import BaseConfig
 from sqlmesh.core.engine_adapter.shared import CatalogSupport
 from sqlmesh.core.engine_adapter import EngineAdapter
-from sqlmesh.utils.pydantic import PYDANTIC_MAJOR_VERSION, field_validator
+from sqlmesh.utils.pydantic import PYDANTIC_MAJOR_VERSION
 
 from utils.errors import ConfigError
 from core import engine_adapter
@@ -23,6 +23,10 @@ else:
 
 
 logger = logging.getLogger(__name__)
+
+SUPPORTED_AUDIT_ENGINES = {
+    "oracle", "postgres", "mssql", "mysql",
+}
 
 
 class ConnectionConfig(abc.ABC, BaseConfig):
@@ -69,6 +73,11 @@ class ConnectionConfig(abc.ABC, BaseConfig):
     def _cursor_init(self) -> t.Optional[t.Callable[[t.Any], None]]:
         """A function that is called to initialize the cursor"""
         return None
+    
+    @property
+    def is_supported_for_audit(self) -> bool:
+        """Whether this engine is officially supported for use as the audit store."""
+        return self.type_ in SUPPORTED_AUDIT_ENGINES
 
     @property
     def _connection_factory_with_kwargs(self) -> t.Callable[[], t.Any]:
@@ -516,7 +525,7 @@ def connection_config_validator(
     return parse_connection_config(v)
 
 
-if t.TYPE_CHECKING:
+if t.TYPE_CHECKING and sys.version_info >= (3, 10):
     # TypeAlias hasn't been introduced until Python 3.10 which means that we can't use it
     # outside the TYPE_CHECKING guard.
     SerializableConnectionConfig: t.TypeAlias = ConnectionConfig  # type: ignore
