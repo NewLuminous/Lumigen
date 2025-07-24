@@ -1,7 +1,7 @@
 from __future__ import annotations
 import typing as t
 import re
-from sqlglot import exp, parse_one
+from sqlglot import exp, parse_one, ParseError
 
 if t.TYPE_CHECKING:
     from core._typing import TableName
@@ -20,6 +20,57 @@ def extract_name_wo_params(string: str) -> t.List[str]:
     if match:
         return match.group(1).strip()
     return string.strip()
+
+def parse_into_select_exp(query: t.Union[exp.Expression, str], dialect: t.Optional[str] = None) -> exp.Select:
+    """
+    Parses or converts a variety of inputs into a SQLGlot SELECT expression.
+
+    Args:
+        query: The input to parse, which can be a SQL string or a SQLGlot expression.
+        dialect: The preferred SQL dialect to use for parsing. If parsing with this
+                 dialect fails, a fallback attempt is made without it.
+
+    Returns:
+        A `sqlglot.exp.Select` object.
+
+    Raises:
+        TypeError: If the input expression is not a `Select` or `Table`, or if the
+                   input is not a string or Expression.
+        ValueError: If the input string cannot be parsed into a `Select` or `Table`
+                    expression, even after the fallback attempt.
+    """
+    parsed_expression: t.Optional[exp.Expression] = None
+    if isinstance(query, str):
+        if dialect:
+            try:
+                parsed_expression = parse_one(query, dialect=dialect)
+            except ParseError:
+                pass  # Fall through to the generic parser
+
+        if parsed_expression is None:
+            try:
+                parsed_expression = parse_one(query)
+            except ParseError as e:
+                raise ValueError(f"Failed to parse the provided SQL string: '{query}'") from e
+        
+        query = parsed_expression
+
+    if isinstance(query, exp.Select):
+        return query
+    
+    if isinstance(query, exp.Table):
+        return exp.select("*").from_(query)
+
+    if isinstance(query, exp.Expression):
+        raise TypeError(
+            f"Cannot convert expression of type '{type(query).__name__}' to a SELECT statement. "
+            "Only Select and Table expressions are supported."
+        )
+    else:
+        raise TypeError(
+            f"Unsupported input type: '{type(query).__name__}'. "
+            "Input must be a SQL string or a SQLGlot Expression."
+        )
 
 def extract_main_table(query: t.Union[exp.Expression, str], quoted: t.Optional[bool] = None) -> str:
     """

@@ -38,12 +38,7 @@ def select_from_values_for_batch_range(
     return exp.select(*casted_columns).from_(values_exp, copy=False).where(where, copy=False)
 
 
-def transform_values(
-    values: t.Tuple[t.Any, ...], columns_to_types: t.Dict[str, exp.DataType]
-) -> t.Iterator[t.Any]:
-    """Perform transformations on values given columns_to_types."""
-
-    def _transform_value(value: t.Any, dtype: exp.DataType) -> t.Any:
+def transform_value(value: t.Any, dtype: t.Optional[exp.DataType] = None) -> t.Any:
         if value is pd.NA:
             return exp.null()
         
@@ -51,39 +46,45 @@ def transform_values(
         if isinstance(value, bytearray):
             return exp.HexString(this=value.hex())
 
-        if (
-            isinstance(value, (list, np.ndarray))
-            and dtype.is_type(*exp.DataType.ARRAY_TYPES)
-            and len(dtype.expressions) == 1
-        ):
-            element_type = dtype.expressions[0]
-            return exp.convert([_transform_value(v, element_type) for v in value])
+        if dtype:
+            if (
+                isinstance(value, (list, np.ndarray))
+                and dtype.is_type(*exp.DataType.ARRAY_TYPES)
+                and len(dtype.expressions) == 1
+            ):
+                element_type = dtype.expressions[0]
+                return exp.convert([transform_value(v, element_type) for v in value])
 
-        if (
-            isinstance(value, dict)
-            and dtype.is_type(*exp.DataType.STRUCT_TYPES)
-            and len(value) == len(dtype.expressions)
-        ):
-            expressions = []
-            for (field_name, field_value), field_type in zip(value.items(), dtype.expressions):
-                if isinstance(field_type, exp.ColumnDef):
-                    field_type = field_type.kind
-                else:
-                    field_type = exp.DataType.build(exp.DataType.Type.UNKNOWN)
+            if (
+                isinstance(value, dict)
+                and dtype.is_type(*exp.DataType.STRUCT_TYPES)
+                and len(value) == len(dtype.expressions)
+            ):
+                expressions = []
+                for (field_name, field_value), field_type in zip(value.items(), dtype.expressions):
+                    if isinstance(field_type, exp.ColumnDef):
+                        field_type = field_type.kind
+                    else:
+                        field_type = exp.DataType.build(exp.DataType.Type.UNKNOWN)
 
-                expressions.append(
-                    exp.PropertyEQ(
-                        this=exp.to_identifier(field_name),
-                        expression=_transform_value(field_value, field_type),
+                    expressions.append(
+                        exp.PropertyEQ(
+                            this=exp.to_identifier(field_name),
+                            expression=transform_value(field_value, field_type),
+                        )
                     )
-                )
 
-            return exp.Struct(expressions=expressions)
+                return exp.Struct(expressions=expressions)
 
-        if dtype.is_type(exp.DataType.Type.JSON):
-            return exp.func("PARSE_JSON", f"'{value}'")
+            if dtype.is_type(exp.DataType.Type.JSON):
+                return exp.func("PARSE_JSON", f"'{value}'")
 
         return exp.convert(value)
 
+
+def transform_values(
+    values: t.Tuple[t.Any, ...], columns_to_types: t.Dict[str, exp.DataType]
+) -> t.Iterator[t.Any]:
+    """Perform transformations on values given columns_to_types."""
     for col_value, col_type in zip(values, columns_to_types.values()):
-        yield _transform_value(col_value, col_type)
+        yield transform_value(col_value, col_type)

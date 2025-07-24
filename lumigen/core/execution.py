@@ -1,6 +1,9 @@
 from __future__ import annotations
 import typing as t
 from collections import OrderedDict
+import pandas as pd
+import pyspark.sql as pyspark_sql
+from pyspark.storagelevel import StorageLevel
 import logging
 from sqlglot import exp
 from sqlmesh.core.engine_adapter.base import (
@@ -11,9 +14,10 @@ if t.TYPE_CHECKING:
     from core.job_context import JobContext
 
 from utils import merge_dicts, FallbackSet
-from utils.dataset import columns_to_types_from_df, get_columns_name
+from utils.dataset import DataFrameConverter, columns_to_types_from_df, get_columns_name, is_batch_or_stream_empty
 from utils.parsing import dialect_insensitive_tbl_name
-from core.config.job import TransformationConfig, DataSaveMode
+from utils.errors import UnsupportedDataFrameError
+from core.config.job import TransformationConfig, DataSaveMode, DataLoadMode, JobMode
 from transformers import transformer_factory, TransformationPipeline
 
 
@@ -29,6 +33,28 @@ def transform_data(transformation_pipeline: t.List[TransformationConfig], job_pr
             raise e
 
     return trans_chain
+
+def _calculate_max_watermark(df, watermark_field: str) -> t.Any:
+    if is_batch_or_stream_empty(df):
+        return None
+
+    df_case_insens_cols = FallbackSet(get_columns_name(df))
+    if watermark_field not in df_case_insens_cols:
+        raise ValueError(
+            f"Watermark field '{watermark_field}' not found. "
+        )
+    watermark_field = df_case_insens_cols.get(watermark_field, watermark_field)
+    
+    if isinstance(df, pyspark_sql.DataFrame):
+        return df.agg({watermark_field: "max"}).collect()[0][0]
+    elif isinstance(df, pd.DataFrame):
+        high_watermark = df[watermark_field].max()
+        high_watermark = DataFrameConverter.to_records(
+            pd.DataFrame({watermark_field: [high_watermark]})
+        )[0][watermark_field]
+        return high_watermark
+    else:
+        raise UnsupportedDataFrameError(f"Unsupported DataFrame type for watermark calculation: {type(df).__name__}")
 
 def write_data(dataset, t_chain: TransformationPipeline, context: JobContext):
     writer = MicroBatchWriter(context.sink_adapter)
@@ -50,8 +76,39 @@ def write_data(dataset, t_chain: TransformationPipeline, context: JobContext):
     else:
         raise NotImplementedError(f"{DataSaveMode.IGNORE} not implemented.") # TODO
 
+    data_load_mode = context.job_props_model.data_load_mode
+    audit_manager = context.audit_manager
+    source_watermark = context.job_props_model.source_watermark
+    high_watermark_max = None
+    if data_load_mode == DataLoadMode.INCREMENTAL:
+        high_watermark_max = audit_manager.get_high_watermark(context.job_props_model.job_id)
     for df in dataset:
-        t_chain.apply(df)
+        if is_batch_or_stream_empty(df):
+            continue
+
+        if audit_manager:
+            is_spark_df = isinstance(df, pyspark_sql.DataFrame)
+            if is_spark_df:
+                if context.job_props_model.job_mode == JobMode.STREAMING:
+                    storage_level = StorageLevel.MEMORY_ONLY
+                else:
+                    storage_level = StorageLevel.MEMORY_AND_DISK
+                df.persist(storage_level)
+
+        try:
+            if data_load_mode == DataLoadMode.INCREMENTAL:
+                with audit_manager.adapter.transaction():
+                    high_watermark_max_in_batch = _calculate_max_watermark(df, source_watermark)
+                    if high_watermark_max is None or (high_watermark_max_in_batch is not None and high_watermark_max < high_watermark_max_in_batch):
+                        audit_manager.update_high_watermark(context, high_watermark_max_in_batch, high_watermark_max is not None)
+                        high_watermark_max = high_watermark_max_in_batch
+                    t_chain.apply(df)
+            else:
+                t_chain.apply(df)
+        finally:
+            if audit_manager and is_spark_df:
+                df.unpersist()
+
 
 class MicroBatchWriter:
     def __init__(self, base_writer: EngineAdapter):

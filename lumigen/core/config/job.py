@@ -131,7 +131,7 @@ class JobSourceRelatedFields(BaseModel):
     def get_source_path(self):
         return self.source_path or extract_main_table(self.source_query)
     
-    def build_source_expression(self, dialect: t.Optional[str] = None) -> t.Union[exp.Expression, str]:
+    def build_source_expression(self, dialect: t.Optional[str] = None) -> t.Union[exp.Select, str]:
         """
         Interprets the source fields and returns a SQLGlot expression or a string.
         """

@@ -31,7 +31,7 @@ if t.TYPE_CHECKING:
     from sqlmesh.core.engine_adapter.base import QueryOrDF
 
 from core.engine_adapter.mixins import EngineAdapterMixin, FetchBatchMixin
-from utils.dataset import DataFrameConverter
+from utils.dataset import columns_to_types_from_df, DataFrameConverter
 
 
 @set_catalog()
@@ -70,8 +70,37 @@ class OracleEngineAdapter(
             exp.DataType.build("CHAR", dialect=DIALECT).this: 2000,
             exp.DataType.build("NCHAR", dialect=DIALECT).this: 2000,
         },
+        coerceable_types={
+            exp.DataType.build("TIMESTAMP(6)", dialect=DIALECT): {
+                exp.DataType.build("TIMESTAMP", dialect=DIALECT)
+            }
+        },
     )
     VARIABLE_LENGTH_DATA_TYPES = {"VARCHAR2", "NVARCHAR2", "CHAR", "NCHAR"}
+
+    @classmethod
+    def _casted_columns(cls, columns_to_types: t.Dict[str, exp.DataType]) -> t.List[exp.Alias]:
+        return [
+            exp.alias_(
+                exp.cast(exp.null(), to=kind if not kind.is_type(exp.DataType.Type.TEXT) else "VARCHAR2(4000)"),
+                column, copy=False
+            )
+            for column, kind in columns_to_types.items()
+        ]
+
+    def alter_table(
+        self,
+        alter_expressions: t.List[exp.Alter],
+    ) -> None:
+        with self.transaction():
+            for alter_expression in alter_expressions:
+                for alter_column_exp in alter_expression.find_all(exp.AlterColumn):
+                    dtype_exp = alter_column_exp.args.get("dtype", False)
+                    if dtype_exp is not False:
+                        column_name = self._to_sql(alter_column_exp.this, quote=True)
+                        dtype = self._to_sql(dtype_exp, quote=True)
+                        alter_column_exp.replace(f"MODIFY {column_name} {dtype}")
+                self.execute(alter_expression)
 
     def columns(
         self,
@@ -168,34 +197,25 @@ class OracleEngineAdapter(
             columns_to_types: Optional a mapping between the column name and its data type.
             kwargs: Optional create table properties.
         """
-        if isinstance(query_or_df, (exp.Query, exp.DerivedTable, str)):
+        if isinstance(query_or_df, (exp.Query, exp.DerivedTable)): # TODO
             super().replace_query(table_name, query_or_df, columns_to_types, table_description, column_descriptions, **kwargs)
             return
         
         target_table = exp.to_table(table_name)
-        target_table = f"{target_table.sql(dialect=self.dialect, identify=True)}"
-        if not self.table_exists(target_table):
-            _, columns_to_types = self._get_source_queries_and_columns_to_types(
-                query_or_df, columns_to_types, target_table=target_table
-            )
-            columns_to_types = columns_to_types or self.columns(target_table)
-            casted_columns = [
-                exp.alias_(
-                    exp.cast(exp.null(), to=kind if not kind.is_type(exp.DataType.Type.TEXT) else "VARCHAR2(4000)"),
-                    column, copy=False
-                ) for column, kind in columns_to_types.items()
-            ]
+        #target_table = f"{target_table.sql(dialect=self.dialect, identify=True)}"
+        columns_to_types = columns_to_types or columns_to_types_from_df(query_or_df)
+        columns_to_types = columns_to_types or self.columns(target_table)
+        table_exists = self.table_exists(target_table)
+        if not table_exists:
+            casted_columns = self._casted_columns(columns_to_types)
             select_schema_exp = exp.select(*casted_columns).from_(exp.to_table("DUAL"), copy=False).where(exp.condition("0=1"), copy=False)
-            create_table_exp = self._build_create_table_exp(target_table, expression=select_schema_exp, exists=False, replace=False)
+            self._create_table(target_table, expression=select_schema_exp, exists=False, replace=False)
 
-        insert_statement = self._build_insert_stmt(target_table, query_or_df.columns)
-        df = DataFrameConverter.to_records(query_or_df)
         with self.transaction():
-            if not self.table_exists(target_table):
-                self.cursor.execute(self._to_sql(create_table_exp))
-            else:
-                self.cursor.execute(f"TRUNCATE TABLE {target_table}")
-            self.cursor.executemany(insert_statement, df)
+            if table_exists:
+                truncate_exp = exp.TruncateTable(expressions=[target_table])
+                self.execute(truncate_exp)
+            self.insert_append(target_table, query_or_df, columns_to_types=columns_to_types)
 
     def insert_append(
         self,
@@ -203,17 +223,30 @@ class OracleEngineAdapter(
         query_or_df: QueryOrDF,
         columns_to_types: t.Optional[t.Dict[str, exp.DataType]] = None,
     ) -> None:
-        if isinstance(query_or_df, (exp.Query, exp.DerivedTable, str)):
+        if isinstance(table_name, (exp.Query, exp.DerivedTable)): # TODO
             super().insert_append(table_name, query_or_df, columns_to_types)
             return
         
-        target_table = exp.to_table(table_name)
-        target_table = f"{target_table.sql(dialect=self.dialect, identify=True)}"
+        columns_to_types = columns_to_types or columns_to_types_from_df(query_or_df)
+        columns_to_types = columns_to_types or self.columns(table_name)
+        placeholder_map = self._build_placeholder_map(columns_to_types)
 
-        insert_statement = self._build_insert_stmt(target_table, query_or_df.columns)
-        df = DataFrameConverter.to_records(query_or_df)
-        with self.transaction():
-            self.cursor.executemany(insert_statement, df)
+        values_exp = exp.values([tuple(exp.Placeholder(this=placeholder_map[col]) for col in columns_to_types)])
+        insert_exp = exp.insert(values_exp, table_name, columns=list(columns_to_types))
+        t.cast("pd.DataFrame", query_or_df).rename(columns=placeholder_map, inplace=True)
+        parameters = DataFrameConverter.to_records(query_or_df)
+        self.execute(insert_exp, parameters=parameters)
+
+    def update_table(
+        self,
+        table_name: TableName,
+        properties: t.Dict[str, t.Any],
+        where: t.Optional[str | exp.Condition] = None,
+    ) -> None:
+        placeholder_map = self._build_placeholder_map(properties)
+        parameters = {placeholder_map[col]: value for col, value in properties.items()}
+        bind_properties = {col: exp.Placeholder(this=placeholder_map[col]) for col in properties}
+        self.execute(exp.update(table_name, bind_properties, where=where), parameters=parameters)
 
     def merge(
         self,
@@ -224,27 +257,27 @@ class OracleEngineAdapter(
         when_matched: t.Optional[exp.Whens] = None,
         merge_filter: t.Optional[exp.Expression] = None,
     ) -> None:
-        if isinstance(source_table, (exp.Query, exp.DerivedTable, str)):
-            super().merge(target_table, source_table, columns_to_types, unique_key, when_matched, merge_filter)
-            return
+        if isinstance(source_table, (exp.Query, exp.DerivedTable)): # TODO
+            return super().merge(
+                target_table, source_table,
+                columns_to_types=columns_to_types,
+                unique_key=unique_key,
+                when_matched=when_matched,
+                merge_filter=merge_filter
+            )
         
-        target_table = exp.to_table(target_table)
-        target_table = f"{target_table.sql(dialect=self.dialect, identify=True)}"
-        _, columns_to_types = self._get_source_queries_and_columns_to_types(
-            source_table, columns_to_types, target_table=target_table
-        )
+        columns_to_types = columns_to_types or columns_to_types_from_df(source_table)
         columns_to_types = columns_to_types or self.columns(target_table)
-        unique_key = [self._to_sql(k, quote=False) for k in unique_key]
-
+        placeholder_map = self._build_placeholder_map(columns_to_types)
         on = exp.and_(
             *(
-                exp.parse_identifier(part).eq(exp.parse_identifier(f":{part}"))
+                part.eq(exp.Placeholder(this=placeholder_map[part.sql()]))
                 for part in unique_key
             )
         )
         if merge_filter:
             on = exp.and_(merge_filter, on)
-        on = "(" + self._to_sql(on, quote=False) + ")"
+        on = exp.Paren(this=on)
 
         if not when_matched:
             when_matched = exp.Whens()
@@ -255,8 +288,8 @@ class OracleEngineAdapter(
                     source=False,
                     then=exp.Update(
                         expressions=[
-                            exp.parse_identifier(col).eq(exp.parse_identifier(f":{col}"))
-                            for col in columns_to_types if col not in unique_key
+                            exp.column(col).eq(exp.Placeholder(this=placeholder_map[col]))
+                            for col in columns_to_types if exp.column(col) not in unique_key
                         ],
                     ),
                 ),
@@ -266,14 +299,20 @@ class OracleEngineAdapter(
                 if node.table == MERGE_TARGET_ALIAS:
                     node.replace(exp.column(node.this))
                 elif node.table == MERGE_SOURCE_ALIAS:
-                    node.replace(exp.parse_identifier(f":{node.this}"))
-            condition = False
-            for node in when_matched.find_all(exp.When):
-                condition = node.args.get("condition", False)
-                node.args["condition"] = False
-            if condition is not False:
-                for node in when_matched.find_all(exp.Update):
-                    node.replace(self._to_sql(node.where(condition), quote=False))
+                    node.replace(exp.Placeholder(this=placeholder_map[node.this.sql()]))
+
+            for when_exp in when_matched.find_all(exp.When):
+                condition = when_exp.args.get("condition", False)
+                when_exp.args["condition"] = False
+                if condition is not False:
+                    if when_exp.args["matched"]:
+                        for update_exp in when_exp.find_all(exp.Update):
+                            update_exp.replace(self._to_sql(update_exp.where(condition), quote=True))
+                    else:
+                        for insert_exp in when_exp.find_all(exp.Insert):
+                            oracle_when_exp = self._to_sql(exp.When(matched=False, then=insert_exp), quote=True)
+                            oracle_when_exp += " " + self._to_sql(exp.Where(this=condition), quote=True)
+                            when_exp.replace(oracle_when_exp)
 
         when_not_matched = exp.When(
             matched=False,
@@ -281,16 +320,25 @@ class OracleEngineAdapter(
             then=exp.Insert(
                 this=exp.Tuple(expressions=[exp.column(col) for col in columns_to_types]),
                 expression=exp.Tuple(
-                    expressions=[exp.parse_identifier(f":{col}") for col in columns_to_types]
+                    expressions=[exp.Placeholder(this=placeholder_map[col]) for col in columns_to_types]
                 ),
             ),
         )
         when_matched.append("expressions", when_not_matched)
+
         merge_exp = exp.Merge(this=exp.to_table(target_table), using="DUAL", on=on, whens=when_matched)
-        merge_statement = self._to_sql(merge_exp, quote=False)
-        df = DataFrameConverter.to_records(source_table)
-        with self.transaction():
-            self.cursor.executemany(merge_statement, df)
+        t.cast("pd.DataFrame", source_table).rename(columns=placeholder_map, inplace=True)
+        parameters = DataFrameConverter.to_records(source_table)
+        self.execute(merge_exp, parameters=parameters)
+
+    def _execute(self, sql: str, parameters: t.Optional[t.List[t.Any]] = None, **kwargs: t.Any) -> None:
+        if parameters:
+            if isinstance(parameters, list):
+                self.cursor.executemany(sql, parameters)
+            else:
+                self.cursor.execute(sql, parameters)
+        else:
+            self.cursor.execute(sql)
     
     def _get_data_objects(
         self, schema_name: SchemaName, object_names: t.Optional[t.Set[str]] = None
@@ -368,8 +416,23 @@ class OracleEngineAdapter(
             self.connection.ping()
         finally:
             self._connection_pool.close_cursor()
-    
-    def _build_insert_stmt(self, table_name: TableName, columns: t.List[str]) -> str:
-        columns = list(columns)
-        insert_exp = exp.insert("VALUES("+','.join(f":{c}" for c in columns)+")", table_name, columns=columns, copy=False)
-        return self._to_sql(insert_exp, quote=False)
+
+    def _build_placeholder_map(self, column_dict: t.Dict[str, t.Any]) -> t.Dict[str, str]:
+        unused_placeholder = []
+        used_placeholder = set()
+        for i in range(len(column_dict)):
+            placeholder = f"c{i+1}"
+            if placeholder in column_dict:
+                used_placeholder.add(placeholder)
+            else:
+                unused_placeholder.append(placeholder)
+        
+        placeholder_map = {}
+        i = 0
+        for col in column_dict:
+            if col in used_placeholder:
+                placeholder_map[col] = col
+            else:
+                placeholder_map[col] = unused_placeholder[i]
+                i += 1
+        return placeholder_map

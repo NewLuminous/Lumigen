@@ -1,7 +1,7 @@
 from __future__ import annotations
 import typing as t
 from abc import ABC, abstractmethod
-from sqlglot import Dialect
+from sqlglot import Dialect, exp
 import logging
 from core.config.root import Config
 from core.config.connection import SparkConnectionConfig, SeaTunnelConnectorConfig
@@ -10,6 +10,8 @@ from core.engine_adapter.mixins import QueryBuilderMixin
 from core.adapters import validate_connections
 from core.execution import transform_data, write_data
 from core.job_context import JobContext, JobContextBuilder
+from core.dialect import transform_value
+from utils.parsing import parse_into_select_exp
 from utils.errors import ConfigError
 
 logger = logging.getLogger(__name__)
@@ -47,7 +49,7 @@ class JobRunner(ABC):
 
         if isinstance(reader, QueryBuilderMixin):
             # The adapter knows best how to build its query.
-            logger.debug(f"Adapter {reader.__class__.__name__} implements QueryBuilderMixin. Delegating query construction.")
+            logger.debug(f"Adapter {reader.__class__.__name__} implements {QueryBuilderMixin.__name__}. Delegating query construction.")
             return reader.build_query(
                 path=job_props.source_path,
                 query=job_props.source_query,
@@ -59,8 +61,17 @@ class JobRunner(ABC):
         if Dialect.get(reader.dialect):
             logger.debug(f"Adapter dialect '{reader.dialect}' is a known SQL dialect. Using generic expression builder.")
             base_query = context.build_source_expression()
+            if job_props.data_load_mode == DataLoadMode.INCREMENTAL and last_watermark:
+                if isinstance(base_query, str):
+                    base_query: exp.Select = parse_into_select_exp(base_query, read=reader.dialect)
 
-            # TODO
+                if not job_props.source_watermark:
+                    raise ValueError(f"`source_watermark` must be provided when `data_load_mode` is '{DataLoadMode.INCREMENTAL}'.")
+                watermark_literal = transform_value(last_watermark)
+                return (
+                    exp.select("*").from_(base_query.subquery(alias="foo"))
+                    .where(exp.GT(this=exp.to_column(job_props.source_watermark), expression=watermark_literal))
+                )
 
             return base_query
 

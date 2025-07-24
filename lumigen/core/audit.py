@@ -3,12 +3,13 @@ import typing as t
 import logging
 from sqlglot import exp
 import pandas as pd
-from sqlmesh.core.engine_adapter.base import (
-    EngineAdapter, MERGE_SOURCE_ALIAS, MERGE_TARGET_ALIAS
-)
 
 if t.TYPE_CHECKING:
     from core.job_context import JobContext
+    from sqlmesh.core.engine_adapter.base import EngineAdapter
+
+from utils.json import encode_typed_value, decode_typed_value
+from utils.collections import FallbackSet
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +25,11 @@ class AuditManager:
     
     STATE_TABLE = "lumigen_job_state"
     STATE_TABLE_SCHEMA: t.ClassVar[t.Dict[str, exp.DataType]] = {
-        "job_id": exp.DataType.build("varchar"),
-        "watermark_field": exp.DataType.build("varchar"),
-        "watermark_value": exp.DataType.build("varchar"),
-        "source_type": exp.DataType.build("varchar"),
+        "job_id": exp.DataType.build("varchar(255)"),
+        "watermark_field": exp.DataType.build("varchar(255)"),
+        "watermark_value": exp.DataType.build("text"),
+        "watermark_value_type": exp.DataType.build("varchar(255)"),
+        "source_type": exp.DataType.build("varchar(255)"),
         "source_path": exp.DataType.build("text"),
         "source_query": exp.DataType.build("text"),
         "updated_at": exp.DataType.build("timestamp"),
@@ -61,18 +63,28 @@ class AuditManager:
             self.adapter.create_table(
                 table_name, 
                 expected_schema, 
-                primary_key=primary_key
+                primary_key=primary_key,
+                exists=False,
             )
             return
         
         logger.debug(f"Validating schema for existing audit table '{table_name}'.")
         try:
-            current_columns = self.adapter.columns(table_name)
-            expected_columns = expected_schema
+            current_schema = self.adapter.columns(table_name)
+            current_columns = FallbackSet(current_schema.keys())
+            
+            # This migration logic is additive-only to prevent accidental data loss.
+            # It checks for any columns that are expected by the application but are
+            # missing from the database, and then adds them without altering existing columns.
+            new_schema = current_schema.copy()
+            for expected_col, expected_dtype in expected_schema.items():
+                if not current_columns.get(expected_col):
+                    new_schema[expected_col] = expected_dtype
+
             alter_expressions = self.adapter.SCHEMA_DIFFER.compare_columns(
                 table_name=table_name,
-                current=current_columns,
-                new=expected_columns,
+                current=current_schema,
+                new=new_schema,
             )
             if not alter_expressions:
                 logger.debug(f"Schema for '{table_name}' is valid and up-to-date.")
@@ -96,28 +108,35 @@ class AuditManager:
     #
     # This entire block will be moved to `StateManager` later.
     # ===================================================================
-    def get_high_watermark(self, job_id: str) -> t.Optional[str]:
+    def get_high_watermark(self, job_id: str) -> t.Optional[t.Any]:
         return self._get_high_watermark_internal(job_id)
     
-    def _get_high_watermark_internal(self, job_id: str) -> t.Optional[str]:
+    def _get_high_watermark_internal(self, job_id: str) -> t.Optional[t.Any]:
         if not job_id:
             return None
         
-        query = exp.select("watermark_value").from_(self.STATE_TABLE).where(
-            exp.column("job_id").eq(exp.Literal.string(job_id))
+        query = (
+            exp.select("watermark_value", "watermark_value_type")
+            .from_(self.STATE_TABLE)
+            .where(exp.column("job_id").eq(exp.Literal.string(job_id)))
         )
-        result = self.adapter.fetchone(query)
+        result = self.adapter.fetchone(query, quote_identifiers=True)
         if result:
-            watermark = result[0]
-            return watermark
+            value_str, type_str = result
+            try:
+                watermark = decode_typed_value(value_str, type_str)
+                return watermark
+            except Exception as e:
+                logger.error(f"Could not decode watermark for job '{job_id}'", exc_info=e)
+                raise e
         
         logger.debug(f"No previous high watermark found for job '{job_id}'. This is expected for the first run.")
         return None
 
-    def update_high_watermark(self, job_context: JobContext, new_watermark_value: t.Any):
-        self._update_high_watermark_internal(job_context, new_watermark_value)
+    def update_high_watermark(self, job_context: JobContext, new_watermark_value: t.Any, record_exists: bool):
+        self._update_high_watermark_internal(job_context, new_watermark_value, record_exists)
 
-    def _update_high_watermark_internal(self, job_context: JobContext, new_watermark_value: t.Any):
+    def _update_high_watermark_internal(self, job_context: JobContext, new_watermark_value: t.Any, record_exists: bool):
         job_id = job_context.job_props_model.job_id
         if not job_id:
             logger.warning("Cannot update high watermark without a `job_id`. Skipping state update.")
@@ -126,10 +145,19 @@ class AuditManager:
         job_props = job_context.job_props_model
         source_dialect = job_context.source_adapter.dialect
         
+        try:
+            watermark_string, watermark_type_string = encode_typed_value(new_watermark_value)
+        except TypeError as e:
+            error_message = (
+                f"Unsupported watermark type '{new_watermark_value.__class__.__name__}' for incremental load. "
+            )
+            raise ValueError(error_message) from e
+        
         source_row_dict = {
             "job_id": job_id,
             "watermark_field": job_props.source_watermark,
-            "watermark_value": str(new_watermark_value),
+            "watermark_value": watermark_string,
+            "watermark_value_type": watermark_type_string,
             "source_type": source_dialect,
             "source_path": job_props.get_source_path(),
             "source_query": job_props.source_query,
@@ -137,27 +165,37 @@ class AuditManager:
         }
         # Filter out any None values to avoid inserting NULLs where not intended
         source_row_dict = {k: v for k, v in source_row_dict.items() if v is not None}
-        source_df = pd.DataFrame([source_row_dict])
-        columns_to_types = {
-            col: self.STATE_TABLE_SCHEMA[col] for col in source_df.columns
-        }
-        unique_key = [exp.to_column("job_id")]
-        update_expressions = [
-            exp.column(col, MERGE_TARGET_ALIAS).eq(exp.column(col, MERGE_SOURCE_ALIAS))
-            for col in source_df.columns if col != 'job_id'
-        ]
-        whens = exp.Whens(expressions=[
-            exp.When(matched=True, source=False, then=exp.Update(expressions=update_expressions))
-        ])
-        
         try:
-            self.adapter.merge(
-                target_table=self.STATE_TABLE,
-                source_table=source_df,
-                columns_to_types=columns_to_types,
-                unique_key=unique_key,
-                when_matched=whens,
-            )
+            if not record_exists:
+                source_df = pd.DataFrame([source_row_dict])
+                columns_to_types = {
+                    col: self.STATE_TABLE_SCHEMA[col] for col in source_df.columns
+                }
+                unique_key = [exp.column("job_id")]
+
+                if record_exists is None:
+                    self.adapter.merge(
+                        target_table=self.STATE_TABLE,
+                        source_table=source_df,
+                        columns_to_types=columns_to_types,
+                        unique_key=unique_key,
+                        when_matched=None,
+                    )
+                else:
+                    self.adapter.insert_append(
+                        self.STATE_TABLE,
+                        source_df, 
+                        columns_to_types=columns_to_types
+                    )
+            else:
+                update_payload = source_row_dict.copy()
+                update_payload.pop("job_id")
+                self.adapter.update_table(
+                    self.STATE_TABLE,
+                    update_payload,
+                    where=exp.column("job_id").eq(exp.Literal.string(job_id)),
+                )
+
             logger.debug(f"Successfully updated state for job_id '{job_id}' with watermark '{new_watermark_value}'.")
         except Exception:
             logger.exception(f"Failed to merge state for job_id '{job_id}'. The high watermark was not updated.")

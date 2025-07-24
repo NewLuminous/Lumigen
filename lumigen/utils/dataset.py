@@ -2,6 +2,7 @@ from __future__ import annotations
 import typing as t
 
 from collections import defaultdict, OrderedDict
+from functools import singledispatch
 import numpy as np
 import pandas as pd
 import pyspark.sql
@@ -16,6 +17,23 @@ from core.engine_context import SQLContextManager
 from utils import FallbackKeyDict
 from utils.parsing import extract_name_wo_params
 
+
+@singledispatch
+def is_batch_or_stream_empty(df: DataFrameType) -> bool:
+    raise NotImplementedError(
+        f"is_batch_or_stream_empty is not implemented for DataFrame type: {type(df).__name__}"
+    )
+
+@is_batch_or_stream_empty.register(pd.DataFrame)
+def _(df: pd.DataFrame) -> bool:
+    return df.empty
+
+@is_batch_or_stream_empty.register(pyspark.sql.DataFrame)
+def _(df: pyspark.sql.DataFrame) -> bool:
+    if df.isStreaming:
+        return False
+    else:
+        return df.isEmpty()
 
 def get_columns_name(df: DataFrameType) -> t.List[str]:
     columns = None
@@ -75,7 +93,7 @@ class DataFrameConverter:
         return df
 
 
-TYPE_MAPPINGS = {
+_TYPE_MAPPINGS = {
     str: exp.DataType.build("text"),
     bytes: exp.DataType.build("binary"),
     list: exp.DataType.build("array"),
@@ -131,11 +149,11 @@ def columns_to_types_from_df(df: DataFrameType) -> t.Dict[str, exp.DataType]:
                 series = df[column_name]
                 series_not_null = series[~series.isnull()]
                 if series_not_null.shape[0] > 0:
-                    exp_type = TYPE_MAPPINGS.get(type(series_not_null.at[0]), exp.DataType.build("text"))
+                    exp_type = _TYPE_MAPPINGS.get(type(series_not_null.at[0]), exp.DataType.build("text"))
                 else:
-                    exp_type = TYPE_MAPPINGS.get(type(column_type))
+                    exp_type = _TYPE_MAPPINGS.get(type(column_type))
             else:
-                exp_type = TYPE_MAPPINGS.get(type(column_type))
+                exp_type = _TYPE_MAPPINGS.get(type(column_type))
             if not exp_type:
                 raise ValueError(f"Unsupported pandas type '{column_type}'")
             result[str(column_name)] = exp_type
@@ -144,7 +162,7 @@ def columns_to_types_from_df(df: DataFrameType) -> t.Dict[str, exp.DataType]:
         for column in df.schema:
             column_name = column.name
             column_type = type(column.dataType)
-            exp_type: t.Optional[exp.DataType] = TYPE_MAPPINGS.get(column_type)
+            exp_type: t.Optional[exp.DataType] = _TYPE_MAPPINGS.get(column_type)
             if not exp_type:
                 raise ValueError(f"Unsupported pyspark type '{column_type}'")
             result[str(column_name)] = exp_type

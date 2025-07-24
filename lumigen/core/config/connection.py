@@ -24,9 +24,8 @@ else:
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_AUDIT_ENGINES = {
-    "oracle", "postgres", "mssql", "mysql",
-}
+# NOTE: ONLY INCLUDE ENGINES THAT SUPPORT TRANSACTION
+SUPPORTED_AUDIT_ENGINES = {"oracle", "postgres", "mssql", "mysql"}
 
 
 class ConnectionConfig(abc.ABC, BaseConfig):

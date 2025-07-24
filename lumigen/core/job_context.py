@@ -9,7 +9,7 @@ if t.TYPE_CHECKING:
     from core.config.connection import ConnectionConfig
 
 from core.config.root import Config
-from core.config.job import JobPropertiesModel
+from core.config.job import JobPropertiesModel, DataLoadMode
 from core.adapters import engine_adapter_factory
 from core.audit import AuditManager
 
@@ -31,7 +31,7 @@ class JobContext:
     # Use a mutable object for transient state during the run
     _transient_state: t.Dict[str, t.Any] = field(default_factory=dict, repr=False)
 
-    def build_source_expression(self) -> t.Union[exp.Expression, str]:
+    def build_source_expression(self) -> t.Union[exp.Select, str]:
         return self.job_props_model.build_source_expression(dialect=self.source_adapter.dialect)
     
     def __enter__(self) -> "JobContext":
@@ -81,12 +81,19 @@ class JobContextBuilder:
         if self.config.sink:
             sink_adapter = engine_adapter_factory(self.executor, self.config.sink)
 
+        job_props_model = JobPropertiesModel(**self.config.job_properties)
         audit_manager = None
         if self.config.audit_store:
             audit_adapter = t.cast("ConnectionConfig", self.config.audit_store).create_engine_adapter()
-            audit_manager = AuditManager(audit_adapter=audit_adapter)
+            try:
+                audit_manager = AuditManager(audit_adapter=audit_adapter)
+            except Exception as e:
+                logger.warning(e)
+                if job_props_model.data_load_mode == DataLoadMode.INCREMENTAL:
+                    raise ValueError(
+                        f"An 'audit_store' connection must be successful when `data_load_mode` is '{DataLoadMode.INCREMENTAL}': {e}"
+                    )
 
-        job_props_model = JobPropertiesModel(**self.config.job_properties)
         job_props = job_props_model.model_dump(exclude_none=True, by_alias=False)
 
         # --- Transient State Setup ---
