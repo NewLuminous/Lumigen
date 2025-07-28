@@ -7,6 +7,7 @@ if t.TYPE_CHECKING:
     from core.job_context import JobContext
     from core.engine_adapter.mixins import FetchBatchMixin, FetchStreamMixin
 
+from core.job_context import RuntimeEnvironment
 from core.runner import JobRunner
 from core.config.job import JobMode
 
@@ -16,12 +17,16 @@ logger = logging.getLogger(__name__)
 class PythonJobRunner(JobRunner):
     """Runs the ETL job using standard Python and Pandas."""
 
+    @property
+    def runtime_environment(self) -> RuntimeEnvironment:
+        return RuntimeEnvironment.PYTHON
+
     def _read_data(self, context: JobContext) -> t.Iterator[DataFrame]:
         """Implements the read logic specifically for Pandas DataFrames."""
         reader = context.source_adapter
         job_props = context.job_props_model
         job_mode = job_props.job_mode
-        batch_size = job_props.source_query
+        batch_size = job_props.source_batch_size
         query = self._get_source_query(context)
 
         if job_mode == JobMode.STREAMING:

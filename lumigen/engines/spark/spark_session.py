@@ -1,13 +1,13 @@
-import logging
+from __future__ import annotations
 import typing as t
+import logging
 from threading import get_ident
 
-from pyspark.sql import DataFrame, SparkSession
-from pyspark.conf import SparkConf
-from pyspark.sql.types import Row
+if t.TYPE_CHECKING:
+    from pyspark.sql import DataFrame, SparkSession
+    from pyspark.sql.types import Row
 
 from engines.spark.errors import NotSupportedError, ProgrammingError
-from core.engine_context import SQLContextManager
 
 logger = logging.getLogger(__name__)
 
@@ -120,12 +120,7 @@ class SparkSessionConnection:
         pass
 
 
-def connection(app_name: t.Optional[str], conf: SparkConf,
-               catalog: t.Optional[str] = None,
-               hive_support: t.Optional[bool] = True,
-               ) -> SparkSessionConnection:
-    manager = SQLContextManager()
-    spark = manager.get_spark_session(app_name=app_name, conf=conf, hive_support=hive_support)
+def connection(spark: SparkSession, catalog: t.Optional[str] = None) -> SparkSessionConnection:
     return SparkSessionConnection(spark, catalog)
 
 

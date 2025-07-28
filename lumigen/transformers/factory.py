@@ -12,7 +12,6 @@ def get_transformer_registry() -> t.Dict[str, t.Type[AbstractTransformerDecorato
     Discovers and returns a dictionary of available transformers by
     walking the 'transformers' package.
     """
-    # This is much cleaner and more robust!
     classes = find_subclasses_in_package(transformers, AbstractTransformerDecorator)
     return {c.__name__: c for c in classes}
 

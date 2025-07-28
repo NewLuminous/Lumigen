@@ -13,7 +13,6 @@ from sqlglot import exp
 if t.TYPE_CHECKING:
     from core._typing import DataFrameType
 
-from core.engine_context import SQLContextManager
 from utils import FallbackKeyDict
 from utils.parsing import extract_name_wo_params
 
@@ -45,12 +44,11 @@ def get_columns_name(df: DataFrameType) -> t.List[str]:
 
 class DataFrameConverter:
     @staticmethod
-    def to_spark(df: DataFrameType) -> pyspark.sql.DataFrame:            
+    def to_spark(df: DataFrameType, spark: pyspark.sql.SparkSession) -> pyspark.sql.DataFrame:            
         if isinstance(df, pd.DataFrame):
             # pandas.DataFrame.iteritems has been deprecated: https://pandas.pydata.org/pandas-docs/version/1.5/reference/api/pandas.DataFrame.iteritems.html
             if not hasattr(df, "iteritems"):
                 df.iteritems = df.items
-            spark = SQLContextManager.get_instance().get_spark_session()
             df = spark.createDataFrame(df)
             
         return df

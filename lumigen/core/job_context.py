@@ -2,6 +2,7 @@ from __future__ import annotations
 import typing as t
 from dataclasses import dataclass, field
 import logging
+from enum import Enum
 from sqlglot import exp
 from sqlmesh.core.engine_adapter.base import EngineAdapter
 
@@ -16,12 +17,22 @@ from core.audit import AuditManager
 logger = logging.getLogger(__name__)
 
 
+class RuntimeEnvironment(str, Enum):
+    """Identifies the execution engine running the job."""
+    PYTHON = "PYTHON"
+    SPARK = "SPARK"
+    SEATUNNEL = "SEATUNNEL"
+
+    def __str__(self) -> str:
+        return self.value
+
 @dataclass
 class JobContext:
     """
     An immutable container for the runtime context of a job.
     Holds all dynamic, stateful objects needed for execution.
     """
+    runtime_environment: t.Optional[RuntimeEnvironment]
     job_props_model: JobPropertiesModel
     job_props: dict
     source_adapter: EngineAdapter
@@ -67,8 +78,13 @@ class JobContextBuilder:
     Constructs a complete and consistent JobContext for a job run or preview.
     This is the single source of truth for context creation.
     """
-    def __init__(self, config: Config, executor_override: t.Optional[EngineAdapter] = None):
+    def __init__(self,
+                 config: Config,
+                 runtime_environment: RuntimeEnvironment,
+                 executor_override: t.Optional[EngineAdapter] = None,
+                 ):
         self.config = config
+        self.runtime_environment = runtime_environment
         self.executor = executor_override if executor_override is not None else self.config.executor
 
     def build(self) -> JobContext:
@@ -91,7 +107,8 @@ class JobContextBuilder:
                 logger.warning(e)
                 if job_props_model.data_load_mode == DataLoadMode.INCREMENTAL:
                     raise ValueError(
-                        f"An 'audit_store' connection must be successful when `data_load_mode` is '{DataLoadMode.INCREMENTAL}': {e}"
+                        f"An 'audit_store' connection must be successful when `data_load_mode` is '{DataLoadMode.INCREMENTAL}': {e}."
+                        f" For stateless jobs that do not require an 'audit_store', consider changing `data_load_mode` to '{DataLoadMode.FULL}'."
                     )
 
         job_props = job_props_model.model_dump(exclude_none=True, by_alias=False)
@@ -108,6 +125,7 @@ class JobContextBuilder:
         job_props["sink"] = sink_adapter
 
         return JobContext(
+            runtime_environment=self.runtime_environment,
             job_props_model=job_props_model,
             job_props=job_props,
             source_adapter=source_adapter,

@@ -73,7 +73,8 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
         return select_exp
 
     @staticmethod
-    def _rewrite_query_using_temp_views(select_exp: exp.Select, source: EngineAdapter) -> t.Tuple[t.Dict, t.Dict]:
+    def _rewrite_query_using_temp_views(select_exp: exp.Select, source: EngineAdapter,
+                                        is_global_temp: t.Optional[bool] = True) -> t.Tuple[t.Dict, t.Dict]:
         # --- Query Rewriting Logic ---
         origin2tmp = {}
         wo_alias2tmp = {}
@@ -108,7 +109,10 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
                 temp_table = origin2tmp[origin_table]
 
             table_exp.args["catalog"] = None
-            table_exp.args["db"] = None
+            if is_global_temp:
+                table_exp.args["db"] = exp.Identifier(this="global_temp", quoted=False)
+            else:
+                table_exp.args["db"] = None
             table_exp.args["this"] = exp.Identifier(this=temp_table, quoted=False)
 
         for column_exp in select_exp.find_all(exp.Column):
@@ -125,11 +129,12 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
         query: str,
         spark: pyspark_sql.SparkSession,
         source: EngineAdapter,
+        is_global: t.Optional[bool] = True,
         **kwargs
     ) -> t.Tuple[str, t.Dict]:
         """Parses the SQL, validates it, and rewrites it to use temporary views."""
         select_exp = SQL.parse_and_validate_query(query, source, **kwargs)
-        origin2tmp, origin2fetch_query = SQL._rewrite_query_using_temp_views(select_exp, source)
+        origin2tmp, origin2fetch_query = SQL._rewrite_query_using_temp_views(select_exp, source, is_global_temp=is_global)
             
         # --- Temp Table Creation and Query Rewriting Logic ---
         for origin_table, fetch_query in origin2fetch_query.items():
@@ -145,7 +150,10 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
                     raise Exception(f"Failed to fetch data from {origin_table}: {e}")
                 
             temp_table = origin2tmp[origin_table]
-            sub_df.createOrReplaceTempView(temp_table)
+            if is_global:
+                sub_df.createOrReplaceGlobalTempView(temp_table)
+            else:
+                sub_df.createOrReplaceTempView(temp_table)
         
         query_spark = select_exp.sql(dialect=Dialects.SPARK)
         return query_spark, origin2tmp
@@ -189,6 +197,7 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
         query: str,
         temp_views: t.Dict,
         spark_session: pyspark_sql.SparkSession,
+        is_global: t.Optional[bool] = True,
     ) -> pyspark_sql.DataFrame:
         """Executes the query and cleans up temp views."""
         try:
@@ -211,7 +220,10 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
         finally:
             # Ensure cleanup happens even if the query fails
             for view_name in temp_views.values():
-                spark_session.catalog.dropTempView(view_name)
+                if is_global:
+                    spark_session.catalog.dropGlobalTempView(view_name)
+                else:
+                    spark_session.catalog.dropTempView(view_name)
 
     @staticmethod
     def _execute_duckdb_query(

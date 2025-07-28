@@ -8,6 +8,7 @@ if t.TYPE_CHECKING:
     from core.config.connection import ConnectionConfig, KafkaConnectionConfig
 
 from core.engine_adapter import SparkJDBCEngineAdapter, SparkKafkaEngineAdapter
+from core.engine_context import SQLContextManager
 from utils.errors import ConfigError
 
 

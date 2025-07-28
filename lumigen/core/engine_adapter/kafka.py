@@ -6,6 +6,7 @@ import typing as t
 import logging
 import json
 import contextlib
+from collections import defaultdict
 from sqlglot import exp
 from sqlmesh.core.engine_adapter.shared import (
     DataObject,
@@ -13,21 +14,25 @@ from sqlmesh.core.engine_adapter.shared import (
 )
 import pandas as pd
 import numpy as np
-from confluent_kafka import KafkaException
+import pyspark.sql
+import pyspark.sql.functions as F
 
 if t.TYPE_CHECKING:
+    from confluent_kafka import KafkaException
     from core._typing import DataFrameType
+    from engines.kafka.kafka_client import KafkaClientCursor
 
 from core.config.job import DataLoadMode
-from core.engine_adapter.mixins import EngineAdapterMixin, FetchStreamMixin, QueryBuilderMixin
+from core.engine_adapter.mixins import EngineAdapterMixin, FetchStreamMixin, QueryBuilderMixin, WatermarkStrategyMixin
+from engines.kafka.kafka_client import MESSAGE_SCHEMA
 from utils import FallbackSet
-from utils.errors import EngineAdapterError, MissingColumnError
+from utils.errors import EngineAdapterError, MissingColumnError, UnsupportedDataFrameError
 from utils.parsing import extract_main_table
 
 logger = logging.getLogger(__name__)
 
 
-class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin, QueryBuilderMixin):
+class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin, QueryBuilderMixin, WatermarkStrategyMixin):
     DIALECT: str = "kafka"
 
     def build_query(
@@ -36,7 +41,7 @@ class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin, QueryBuilderMixin
         query: t.Optional[str] = None,
         data_load_mode: t.Optional[DataLoadMode] = None,
         watermark_column: t.Optional[str] = None,
-        last_watermark_value: t.Optional[t.Any] = None, # TODO
+        last_watermark_value: t.Optional[t.Any] = None,
         **kwargs: t.Any,
     ) -> t.Any:
         if query:
@@ -49,10 +54,14 @@ class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin, QueryBuilderMixin
 
         topics = [tp.strip() for tp in topics_str.split(',')]
         
-        result = json.dumps({
-            "topics": topics
+        op_params = {
+            "topics": topics,
+        }
+        if data_load_mode == DataLoadMode.INCREMENTAL and last_watermark_value:
+            op_params["storedOffsets"] = last_watermark_value
+        return json.dumps({
+            "consume": op_params
         })
-        return result
 
     def fetch_batch_df(
         self,
@@ -63,7 +72,7 @@ class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin, QueryBuilderMixin
         batches = self.fetchbatch(topic, batch_size, quote_identifiers=quote_identifiers)
         for batch in batches:
             logger.info(f"Fetched {len(batch)} Kafka messages")
-            yield pd.DataFrame(batch, columns=['key', 'value', 'topic', 'partition', 'offset', 'timestamp', 'timestampType', 'headers'])
+            yield pd.DataFrame(batch, columns=list(MESSAGE_SCHEMA.keys()))
 
     @contextlib.contextmanager
     def transaction(
@@ -96,7 +105,8 @@ class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin, QueryBuilderMixin
                 try:
                     self._connection_pool.commit()
                     break
-                except KafkaException as e:
+                except Exception as e:
+                    e: KafkaException
                     if e.args[0].retriable():
                         logger.debug("Retriable error during commit. Retrying...")
                         continue
@@ -115,6 +125,17 @@ class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin, QueryBuilderMixin
         except Exception as e:
             self._connection_pool.rollback()
             raise e
+        
+    def recycle(self) -> None:
+        """Closes all open connections and releases all allocated resources associated with any thread
+        except the calling one."""
+        self._connection_pool.close_cursor()
+        self._connection_pool.close_all(exclude_calling_thread=True)
+
+    def close(self) -> t.Any:
+        """Closes all open connections and releases all allocated resources."""
+        self._connection_pool.close_cursor()
+        self._connection_pool.close_all()
     
     def replace_query(
         self,
@@ -123,17 +144,7 @@ class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin, QueryBuilderMixin
         **kwargs: t.Any,
     ) -> None:
         topic_list = [tn.strip() for tn in topics.split(',')]
-        topics_to_delete = self._connection_pool.get().filter_topics(topic_list)
-        if len(topics_to_delete) > 0:
-            delete_response = self._connection_pool.get().get_admin().delete_topics(topics_to_delete)
-            for topic, future in delete_response.items():
-                try:
-                    future.result()  # Block until the operation is complete
-                    logger.info(f"Topic '{topic}' successfully deleted.")
-                except Exception as e:
-                    logger.error(f"Failed to delete topic '{topic}'.")
-                    raise e
-                
+        self.execute(json.dumps({"delete": {"topics": topic_list}}))
         self.insert_append(topics, df, **kwargs)
 
     def insert_append(
@@ -142,10 +153,6 @@ class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin, QueryBuilderMixin
         df: DataFrameType,
         **kwargs: t.Any,
     ) -> None:
-        def delivery_report(err, msg):
-            if err is not None:
-                logger.debug(f"Message delivery failed: {err}")
-
         topic_list = [tn.strip() for tn in topics.split(',')]
         df_case_insens_cols = FallbackSet(df.columns)
         if "value" not in df_case_insens_cols:
@@ -158,8 +165,8 @@ class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin, QueryBuilderMixin
         values = df[df_case_insens_cols.get("value")].map(bytes, na_action="ignore").replace(np.nan, None)
         with self.transaction():
             for topic in topic_list:
-                for key, value in zip(keys, values):
-                    self._connection_pool.get().get_producer().produce(topic, key=key, value=value, callback=delivery_report)
+                request = json.dumps({"produce": {"topic": topic}})
+                self.execute(request, payload=list({"key": key, "value": value} for key, value in zip(keys, values)))
 
     def merge(self, *args, **kwargs) -> None:
         raise EngineAdapterError("Unsupported MERGE operation for Kafka sinks.")
@@ -173,18 +180,19 @@ class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin, QueryBuilderMixin
     def columns(
         self, topics: str, include_pseudo_columns: bool = False
     ) -> t.Dict[str, exp.DataType]:
-        return self.cursor.MESSAGE_SCHEMA
+        return MESSAGE_SCHEMA
 
     def table_exists(self, topics: str) -> bool:
         topic_list = [tn.strip() for tn in topics.split(',')]
-        topic_names = self._connection_pool.get().filter_topics(topic_list)
+        cursor: KafkaClientCursor = self.cursor
+        topic_names = cursor.filter_topics(topic_list)
         return len(topic_names) > 0
     
     def get_all_data_objects(self, keyword: str="") -> t.List[DataObject]:
         keyword = keyword.strip()
-        topics = self._connection_pool.get().topics
+        cursor: KafkaClientCursor = self.cursor
         data_objects = []
-        for topic in topics:
+        for topic in cursor.topics:
             if '.' in topic:
                 schema: str = topic.split('.')[0]
                 table: str = '.'.join(topic.split('.')[1:])
@@ -209,3 +217,42 @@ class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin, QueryBuilderMixin
                 type=DataObjectType.TABLE,
             ))
         return data_objects
+    
+    def determine_high_watermark(self, df: DataFrameType, watermark_field: str, current_watermark_value: t.Any) -> t.Any:
+        current_state: t.Dict[str, t.Dict[str, int]] = {}
+        if current_watermark_value:
+            try:
+                if isinstance(current_watermark_value, (str, bytes, bytearray)):
+                    loaded = json.loads(current_watermark_value)
+                else:
+                    loaded = current_watermark_value
+                
+                if isinstance(loaded, dict):
+                    current_state = loaded
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("Could not parse current watermark value. Starting with a fresh state.")
+                current_state = {}
+
+        if isinstance(df, pyspark.sql.DataFrame):
+            max_offsets_in_batch = {}
+            agg_results = (
+                df.groupBy("topic", "partition")
+                  .agg(F.max("offset").alias("max_offset"))
+                  .collect()
+            )
+            for row in agg_results:
+                max_offsets_in_batch[(row.topic, row.partition)] = row.max_offset
+        elif isinstance(df, pd.DataFrame):
+            max_offsets_in_batch = df.groupby(['topic', 'partition'])["offset"].max().to_dict()
+        else:
+            raise UnsupportedDataFrameError(f"DataFrame type not supported for Kafka watermark calculation: {type(df).__name__}")
+        
+        # Deep copy to avoid modifying the original state dictionary in place
+        new_state = defaultdict(dict, {k: v.copy() for k, v in current_state.items()})
+        for (topic, partition), max_offset in max_offsets_in_batch.items():
+            partition_str = str(partition)
+            previous_max = new_state.get(topic, {}).get(partition_str, -1)
+            if max_offset > previous_max:
+                new_state[topic][partition_str] = int(max_offset)
+
+        return new_state

@@ -15,6 +15,7 @@ if t.TYPE_CHECKING:
     from core.config.connection import ConsoleConfig
 
 from core.engine_adapter.mixins import EngineAdapterMixin, FetchBatchMixin
+from core.engine_context import SQLContextManager
 from utils.dataset import DataFrameConverter
 
 logger = logging.getLogger(__name__)
@@ -26,7 +27,7 @@ class FakeEngineAdapter(FetchBatchMixin, EngineAdapterMixin):
     def fetch_pyspark_df(
         self, query: t.Union[exp.Expression, str], quote_identifiers: bool = False
     ) -> pyspark.sql.DataFrame:
-        return DataFrameConverter.to_spark(self.fetchdf(query))
+        return DataFrameConverter.to_spark(self.fetchdf(query), SQLContextManager().get_spark_session())
     
     def replace_query(self, table_name, df: DataFrameType, **kwargs: t.Any) -> None:
         self.insert_append(table_name, df)

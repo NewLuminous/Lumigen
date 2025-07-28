@@ -104,7 +104,10 @@ class SQLContextManager:
     
     def get_spark_session(
             self,
-            app_name: t.Optional[str] = None, conf: t.Optional['SparkConf'] = None, hive_support: t.Optional[bool] = True,
+            app_name: t.Optional[str] = None,
+            conf: t.Optional['SparkConf'] = None,
+            hive_support: t.Optional[bool] = True,
+            log_level: t.Optional[str] = "INFO",
         ) -> 'SparkSession':
         """
         Lazily initializes and returns a SparkSession.
@@ -116,7 +119,7 @@ class SQLContextManager:
             app_name: The name for the Spark application.
             conf: A SparkConf object for custom configuration.
             hive_support: Whether to enable Hive support. Defaults to True.
-            timeout: Max seconds to wait for Spark session creation before raising an error.
+            log_level: Defaults to INFO.
 
         Returns:
             An active SparkSession instance.
@@ -145,6 +148,7 @@ class SQLContextManager:
                 if hive_support:
                     builder = builder.enableHiveSupport()
                 session = builder.getOrCreate()
+                session.sparkContext.setLogLevel(log_level)
 
                 builtin_funcs = Counter(self._list_spark_functions(session))
                 registered_udfs = self._register_all_udfs(session)

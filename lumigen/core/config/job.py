@@ -1,6 +1,6 @@
 from __future__ import annotations
-
 import typing as t
+import logging
 from pydantic import BaseModel, model_validator, field_validator, ValidationError, constr
 from enum import Enum
 from sqlglot import exp
@@ -9,7 +9,7 @@ from sqlmesh.core.config.base import BaseConfig
 from utils.parsing import dialect_insensitive_tbl_name, extract_main_table
 from utils.errors import ConfigError
 
-
+logger = logging.getLogger(__name__)
 StringOrInt = t.Union[str, int]
 
 
@@ -230,6 +230,21 @@ class JobPropertiesModel(
     """Whether the task is in BATCH or STREAMING mode."""
     spark_submit_options: t.Optional[t.Dict[str, StringOrInt]] = {}
     """A dictionary of parameters when submitting a Spark application using the `spark-submit` command."""
+
+    @model_validator(mode='before')
+    @classmethod
+    def _default_incremental_for_streaming(cls, data: t.Any) -> t.Any:
+        """
+        Defaults data_load_mode to INCREMENTAL if job_mode is STREAMING and
+        data_load_mode is not explicitly set.
+        """
+        if isinstance(data, dict):
+            job_mode = JobMode.from_string(data.get("job_mode", "BATCH"))
+            
+            if job_mode == JobMode.STREAMING and "data_load_mode" not in data:
+                logger.info("Defaulting data_load_mode to INCREMENTAL for STREAMING job.")
+                data["data_load_mode"] = DataLoadMode.INCREMENTAL
+        return data
 
     @model_validator(mode='after')
     def _validate_incremental_requires_job_id(self) -> "JobPropertiesModel":

@@ -174,3 +174,25 @@ class QueryBuilderMixin(ABC):
             can understand and execute.
         """
         pass
+
+class WatermarkStrategyMixin(ABC):
+    """
+    An abstract mixin for EngineAdapters that provide a custom strategy
+    for determining the high watermark from a processed batch of data.
+    """
+
+    @abstractmethod
+    def determine_high_watermark(self, df: DF, watermark_field: str, current_watermark_value: t.Any) -> t.Any:
+        """
+        Determines the highest watermark value from a given DataFrame batch.
+
+        Args:
+            df: The DataFrame batch.
+            watermark_field: The name of the column that contains the watermark,
+                             provided for context even if not used by the strategy.
+            current_watermark_value: The current value of watermark.
+
+        Returns:
+            The high watermark for this batch.
+        """
+        pass

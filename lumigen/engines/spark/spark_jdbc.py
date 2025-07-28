@@ -1,13 +1,10 @@
 from __future__ import annotations
 import typing as t
 
-from pyspark.sql import SparkSession
-from pyspark.conf import SparkConf
-
 if t.TYPE_CHECKING:
+    from pyspark.sql import SparkSession
     from core.config.connection import ConnectionConfig
 
-from core.engine_context import SQLContextManager
 from engines.spark.errors import NotSupportedError
 from engines.spark.spark_session import SparkSessionCursor, SparkSessionConnection
 
@@ -70,10 +67,5 @@ class SparkJDBCConnection(SparkSessionConnection):
         return SparkJDBCCursor(self.spark, self.connection_config)
 
 
-def connection(app_name: t.Optional[str], conf: SparkConf, connection_config: "ConnectionConfig",
-               catalog: t.Optional[str] = None,
-               hive_support: t.Optional[bool] = True,
-               ) -> SparkJDBCConnection:
-    manager = SQLContextManager()
-    spark = manager.get_spark_session(app_name=app_name, conf=conf, hive_support=hive_support)
+def connection(spark: SparkSession, connection_config: "ConnectionConfig", catalog: t.Optional[str] = None) -> SparkJDBCConnection:
     return SparkJDBCConnection(spark, connection_config, catalog)

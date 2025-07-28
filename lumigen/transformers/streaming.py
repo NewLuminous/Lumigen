@@ -1,7 +1,6 @@
 import typing as t
 import pyspark.sql
 import pandas as pd
-from abc import abstractmethod
 
 from transformers.base import AbstractTransformer, AbstractTransformerDecorator
 from utils.errors import UnsupportedDataFrameError, TransformerError
@@ -14,7 +13,7 @@ class ForeachBatch(AbstractTransformerDecorator):
                   df,
                   foreach_batch_func: t.Optional[t.Callable[[t.Any, int], None]] = None,
                   checkpoint_location: t.Optional[str] = None,
-                  trigger_interval: t.Optional[int] = 0,
+                  trigger_interval: t.Optional[int] = 5,
                   *args, **kwargs):
         """
         Terminal operation for streaming data frames.
@@ -49,16 +48,15 @@ class ForeachBatch(AbstractTransformerDecorator):
                     .foreachBatch(foreach_batch_func) \
                     .start() \
                     .awaitTermination()
+                
+                # This transformer is terminal, it returns None, stopping the chain.
+                return None
             else:
                 # For non-streaming, just run it once.
-                foreach_batch_func(df, batch_id=0)
+                return foreach_batch_func(df, batch_id=0)
         else:
-            foreach_batch_func(df, batch_id=0)
-
-        # This transformer is terminal, it returns None, stopping the chain.
-        return None
+            return foreach_batch_func(df, batch_id=0)
     
-    #@abstractmethod
     def foreach_batch_func(self, df, batch_id: int) -> t.Any:
         return df
 
@@ -68,7 +66,7 @@ class ForeachBatch(AbstractTransformerDecorator):
         return self._apply_callbacks(df)
 
     def transform_and_callback(self, df, *args, **kwargs):
-        self.transform(df, foreach_batch_func = self.foreach_batch_func_and_callback, *args, **kwargs)
+        return self.transform(df, foreach_batch_func = self.foreach_batch_func_and_callback, *args, **kwargs)
 
     def chain(self, other: AbstractTransformer, *transform_args, **transform_kwargs) -> AbstractTransformer:
         super().chain(other, *transform_args, **transform_kwargs)

@@ -10,7 +10,10 @@ class EngineAdapterError(DPError):
 class UnsupportedDataFrameError(DPError):
     pass
 
-class UnsupportedCatalogOperationError(EngineAdapterError):
+class UnsupportedOperationError(EngineAdapterError):
+    pass
+
+class UnsupportedCatalogOperationError(UnsupportedOperationError):
     pass
 
 class TransformerError(DPError):

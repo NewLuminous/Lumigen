@@ -367,6 +367,7 @@ class SparkConnectionConfig(ConnectionConfig):
 
     app_name: t.Optional[str] = None
     config_dir: t.Optional[str] = None
+    log_level: t.Optional[str] = "INFO"
     config: t.Optional[t.Dict[str, t.Any]] = {}
     catalog: t.Optional[str] = None
     hive_support: t.Optional[bool] = True
@@ -396,6 +397,7 @@ class SparkConnectionConfig(ConnectionConfig):
     @property
     def _static_connection_kwargs(self) -> t.Dict[str, t.Any]:
         from pyspark.conf import SparkConf
+        from core.engine_context import SQLContextManager
 
         spark_config = SparkConf()
         if self.config:
@@ -405,9 +407,12 @@ class SparkConnectionConfig(ConnectionConfig):
         if self.config_dir:
             os.environ["SPARK_CONF_DIR"] = self.config_dir
         return {
-            "app_name": self.app_name,
-            "conf": spark_config,
-            "hive_support": self.hive_support,
+            "spark": SQLContextManager().get_spark_session(
+                app_name=self.app_name,
+                conf=spark_config,
+                hive_support=self.hive_support,
+                log_level=self.log_level,
+            )
         }
     
 

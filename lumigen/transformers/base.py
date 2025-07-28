@@ -20,7 +20,7 @@ class AbstractTransformer(object):
     to be chained, which is essential for terminal operations like PySpark's
     `foreachBatch` that do not return a DataFrame.
     """
-    def __init__(self):
+    def __init__(self, **kwargs):
         self.callbacks: t.List[t.Callable[[t.Any], t.Any]] = []
 
     @abstractmethod
@@ -69,7 +69,7 @@ class AbstractTransformerDecorator(AbstractTransformer):
     """A transformer that decorates/wraps a preceding transformer."""
     _pre_transformer: AbstractTransformer = None
 
-    def __init__(self, pre_transformer: t.Optional[AbstractTransformer] = None):
+    def __init__(self, pre_transformer: t.Optional[AbstractTransformer] = None, **kwargs):
         super(AbstractTransformerDecorator, self).__init__()
         self._pre_transformer = pre_transformer
 

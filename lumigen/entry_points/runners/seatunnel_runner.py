@@ -10,6 +10,7 @@ if t.TYPE_CHECKING:
     from core.config.root import Config
 
 from config.environment import settings
+from core.job_context import RuntimeEnvironment
 from core.runner import JobRunner
 from utils import hocon
 from entry_points.launchers import submit_job
@@ -22,6 +23,11 @@ class SeaTunnelJobRunner(JobRunner):
     Runs the ETL job by generating a SeaTunnel config and launching the
     appropriate SeaTunnel script.
     """
+
+    @property
+    def runtime_environment(self) -> RuntimeEnvironment:
+        return RuntimeEnvironment.SEATUNNEL
+
     def __init__(self, config: Config):
         self.config = config
 
