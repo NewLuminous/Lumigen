@@ -1,9 +1,14 @@
 import typing as t
+import tempfile
+import shutil
 import pyspark.sql
 import pandas as pd
+import logging
 
 from transformers.base import AbstractTransformer, AbstractTransformerDecorator
 from utils.errors import UnsupportedDataFrameError, TransformerError
+
+logger = logging.getLogger(__name__)
 
 
 class ForeachBatch(AbstractTransformerDecorator):
@@ -37,25 +42,48 @@ class ForeachBatch(AbstractTransformerDecorator):
         df = super().transform(df, *args, **kwargs)
 
         self.kwargs = kwargs
-        if isinstance(df, pyspark.sql.DataFrame):
-            if df.isStreaming:
-                writer = df.writeStream
-                if checkpoint_location:
-                    writer = writer.option("checkpointLocation", checkpoint_location)
-                    
-                writer.outputMode("append") \
-                    .trigger(processingTime=f"{trigger_interval} seconds") \
-                    .foreachBatch(foreach_batch_func) \
-                    .start() \
-                    .awaitTermination()
-                
-                # This transformer is terminal, it returns None, stopping the chain.
-                return None
-            else:
-                # For non-streaming, just run it once.
-                return foreach_batch_func(df, batch_id=0)
-        else:
+        if not isinstance(df, pyspark.sql.DataFrame):
+            # For non-Spark DataFrames, just run the function once as a batch.
             return foreach_batch_func(df, batch_id=0)
+        
+        if not df.isStreaming:
+            # For non-streaming Spark DataFrames, run once as a batch.
+            return foreach_batch_func(df, batch_id=0)
+
+        temp_dir_to_clean = None
+        if not checkpoint_location:
+            try:
+                temp_dir_to_clean = tempfile.mkdtemp(prefix="spark-tmp-ckpt_")
+                checkpoint_location = f"file://{temp_dir_to_clean}"
+                logger.info(f"No checkpointLocation provided. Created temporary checkpoint directory: {checkpoint_location}")
+            except Exception as e:
+                logger.error("Failed to create temporary checkpoint directory.", exc_info=True)
+                raise TransformerError("Could not create a temporary directory for Spark checkpointing.") from e
+            
+        try:
+            writer = df.writeStream
+            writer = writer.option("checkpointLocation", checkpoint_location)
+            query = (
+                writer.outputMode("append")
+                    .trigger(processingTime=f"{trigger_interval} seconds")
+                    .foreachBatch(foreach_batch_func)
+                    .start()
+            )
+            logger.info(f"Spark streaming query '{query.name}' started. Awaiting termination...")
+            query.awaitTermination()
+            logger.info(f"Spark streaming query '{query.name}' terminated normally.")
+        finally:
+            if temp_dir_to_clean:
+                try:
+                    logger.info(f"Cleaning up temporary checkpoint directory: {temp_dir_to_clean}")
+                    shutil.rmtree(temp_dir_to_clean)
+                    logger.debug("Temporary directory successfully removed.")
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to clean up temporary checkpoint directory: {temp_dir_to_clean}. "
+                        f"Manual cleanup may be required. Error: {e}"
+                    )
+        return None
     
     def foreach_batch_func(self, df, batch_id: int) -> t.Any:
         return df

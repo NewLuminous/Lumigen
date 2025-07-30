@@ -1,10 +1,6 @@
 from __future__ import annotations
 import typing as t
 from collections import OrderedDict
-import tempfile
-import pandas as pd
-import pyspark.sql as pyspark_sql
-from pyspark.storagelevel import StorageLevel
 import logging
 from sqlglot import exp
 from sqlmesh.core.engine_adapter.base import (
@@ -15,12 +11,10 @@ if t.TYPE_CHECKING:
     from core.job_context import JobContext
 
 from utils import merge_dicts, FallbackSet
-from utils.dataset import DataFrameConverter, columns_to_types_from_df, get_columns_name, is_batch_or_stream_empty
+from utils.dataset import columns_to_types_from_df, get_columns_name, is_batch_or_stream_empty
 from utils.parsing import dialect_insensitive_tbl_name
-from utils.errors import UnsupportedDataFrameError
 from core.config.job import TransformationConfig, DataSaveMode, DataLoadMode, JobMode
-from core.job_context import RuntimeEnvironment
-from core.engine_adapter.mixins import WatermarkStrategyMixin
+from core.pipeline.watermark_tracker import WatermarkTracker
 from transformers import transformer_factory, TransformationPipeline
 from transformers.streaming import ForeachBatch
 
@@ -28,63 +22,24 @@ logger = logging.getLogger(__name__)
 
 
 def transform_data(transformation_pipeline: t.List[TransformationConfig], context: JobContext) -> TransformationPipeline:
-    # Normalize transformation pipeline
+    """
+    Constructs the full transformation pipeline for a job.
+    This involves:
+    1. Injecting system-level transformers (like WatermarkTracker if auditing is available).
+    2. Appending all user-defined transformers from the configuration.
+    """
     trans_chain = TransformationPipeline()
-    runtime_env = context.runtime_environment
-    job_mode = context.job_props_model.job_mode
-    reader = context.source_adapter
     audit_manager = context.audit_manager
-    source_watermark = context.job_props_model.source_watermark
-    # Cannot calculate watermark on Spark Streaming DataFrames.
-    # Convert them to Batch DataFrames first
-    if runtime_env == RuntimeEnvironment.SPARK and job_mode == JobMode.STREAMING and audit_manager:
-        # Find the first ForeachBatch transformer
-        foreach_batch_pos = -1
-        for i in range(len(transformation_pipeline)):
-            transformer = transformer_factory(transformation_pipeline[i].name)
+    # If auditing is available, the WatermarkTracker must be before all user-defined operations.
+    if audit_manager and context.job_props_model.source_watermark:
+        # Find the first user-defined ForeachBatch to inherit its checkpointing options.
+        options = {}
+        for transform_cfg in transformation_pipeline:
+            transformer = transformer_factory(transform_cfg.name)
             if isinstance(transformer, ForeachBatch):
-                foreach_batch_pos = i
+                options = transform_cfg.options.copy()
                 break
-
-        # Add a ForeachBatch at the beginning of the pipeline with necessary options (e.g. trigger_interval)
-        if foreach_batch_pos >= 0:
-            options = transformation_pipeline[foreach_batch_pos].options.copy()
-        else:
-            options = {}
-        temp_dir = tempfile.mkdtemp(prefix="spark-tmp-ckpts_")
-        options["checkpoint_location"] = f"file://{temp_dir}"
-
-        class WatermarkTracker(ForeachBatch):
-            high_watermark_max = audit_manager.get_high_watermark(context.job_props_model.job_id)
-            
-            def foreach_batch_func_and_callback(self, df: pyspark_sql.DataFrame, batch_id: int) -> None:
-                if is_batch_or_stream_empty(df):
-                    logger.warning("An empty DataFrame was encountered and will be skipped.")
-                    return
-                
-                df.persist(StorageLevel.MEMORY_ONLY)
-                try:
-                    if isinstance(reader, WatermarkStrategyMixin):
-                        high_watermark_max_in_batch = reader.determine_high_watermark(df, source_watermark, self.high_watermark_max)
-                    else:
-                        high_watermark_max_in_batch = _calculate_max_watermark(df, source_watermark)
-                        if high_watermark_max_in_batch and self.high_watermark_max and high_watermark_max_in_batch <= self.high_watermark_max:
-                            high_watermark_max_in_batch = None
-
-                    with audit_manager.adapter.transaction():
-                        if high_watermark_max_in_batch is not None:
-                            audit_manager.update_high_watermark(context, high_watermark_max_in_batch, self.high_watermark_max is not None)
-                            self.high_watermark_max = high_watermark_max_in_batch
-                        self._apply_callbacks(df)
-                finally:
-                    df.unpersist()
-
-        try:
-            trans_chain.add_transformer(WatermarkTracker(), **merge_dicts(context.job_props, options))
-        except TypeError as e:
-            transformer_logger = logging.getLogger(WatermarkTracker.__name__)
-            transformer_logger.exception(f"TypeError during transformer setup: {e}")
-            raise e
+        trans_chain.add_transformer(WatermarkTracker(context), **merge_dicts(context.job_props, options))
 
     # Build transformation pipeline
     for transform_cfg in transformation_pipeline:
@@ -107,6 +62,7 @@ def write_data(dataset, t_chain: TransformationPipeline, context: JobContext):
     # operation to the end of the pipeline. This operation will be called
     # for each DataFrame batch during the execution phase.
     writer = MicroBatchWriter(context.sink_adapter)
+    audit_manager = context.audit_manager
     sink_table = context.job_props_model.get_sink_path()
     sink_table = dialect_insensitive_tbl_name(sink_table, writer.dialect)
 
@@ -134,7 +90,11 @@ def write_data(dataset, t_chain: TransformationPipeline, context: JobContext):
     if data_load_mode == DataLoadMode.FULL and job_mode == JobMode.BATCH:
         # For BATCH FULL Loads, wrap the entire loop in a single transaction for atomicity and performance.
         with context.sink_adapter.transaction():
-            _process_dataset_loop(dataset, t_chain, context)
+            if audit_manager:
+                with audit_manager.adapter.transaction():
+                    _process_dataset_loop(dataset, t_chain, context)
+            else:
+                _process_dataset_loop(dataset, t_chain, context)
     else:
         # For all other modes, process data batch-by-batch:
         # - INCREMENTAL loads require per-batch commits to safely update state.
@@ -143,67 +103,12 @@ def write_data(dataset, t_chain: TransformationPipeline, context: JobContext):
         _process_dataset_loop(dataset, t_chain, context)
 
 def _process_dataset_loop(dataset, t_chain: TransformationPipeline, context: JobContext):
-    data_load_mode = context.job_props_model.data_load_mode
-    job_mode = context.job_props_model.job_mode
-    reader = context.source_adapter
-    audit_manager = context.audit_manager
-    source_watermark = context.job_props_model.source_watermark
-    high_watermark_max = None
-    if data_load_mode == DataLoadMode.INCREMENTAL:
-        high_watermark_max = audit_manager.get_high_watermark(context.job_props_model.job_id)
     for df in dataset:
         if is_batch_or_stream_empty(df):
             logger.warning("An empty DataFrame was encountered and will be skipped.")
             continue
 
-        if audit_manager:
-            is_spark_df = isinstance(df, pyspark_sql.DataFrame)
-            if is_spark_df and not df.isStreaming:
-                df.persist(StorageLevel.MEMORY_AND_DISK)
-
-        try:
-            if data_load_mode == DataLoadMode.INCREMENTAL and not (is_spark_df and df.isStreaming):
-                # Check if the adapter provides a custom strategy
-                if isinstance(reader, WatermarkStrategyMixin):
-                    high_watermark_max_in_batch = reader.determine_high_watermark(df, source_watermark, high_watermark_max)
-                else:
-                    high_watermark_max_in_batch = _calculate_max_watermark(df, source_watermark)
-                    if high_watermark_max_in_batch and high_watermark_max and high_watermark_max_in_batch <= high_watermark_max:
-                        high_watermark_max_in_batch = None
-                        
-                with audit_manager.adapter.transaction():
-                    if high_watermark_max_in_batch is not None:
-                        audit_manager.update_high_watermark(context, high_watermark_max_in_batch, high_watermark_max is not None)
-                        high_watermark_max = high_watermark_max_in_batch
-                    t_chain.apply(df)
-            else:
-                t_chain.apply(df)
-        finally:
-            if audit_manager and is_spark_df and not df.isStreaming:
-                df.unpersist()
-
-def _calculate_max_watermark(df, watermark_field: str) -> t.Any:
-    if is_batch_or_stream_empty(df):
-        return None
-
-    df_case_insens_cols = FallbackSet(get_columns_name(df))
-    if watermark_field not in df_case_insens_cols:
-        raise ValueError(
-            f"Watermark field '{watermark_field}' not found. "
-        )
-    watermark_field = df_case_insens_cols.get(watermark_field, watermark_field)
-    
-    if isinstance(df, pyspark_sql.DataFrame):
-        return df.agg({watermark_field: "max"}).collect()[0][0]
-    elif isinstance(df, pd.DataFrame):
-        high_watermark = df[watermark_field].max()
-        high_watermark = DataFrameConverter.to_records(
-            pd.DataFrame({watermark_field: [high_watermark]})
-        )[0][watermark_field]
-        return high_watermark
-    else:
-        raise UnsupportedDataFrameError(f"Unsupported DataFrame type for watermark calculation: {type(df).__name__}")
-
+        t_chain.apply(df)
 
 class MicroBatchWriter:
     def __init__(self, base_writer: EngineAdapter):

@@ -8,8 +8,10 @@ if t.TYPE_CHECKING:
     from core.job_context import JobContext
     from sqlmesh.core.engine_adapter.base import EngineAdapter
 
+from core.config.job import DataLoadMode
 from utils.json import encode_typed_value, decode_typed_value
 from utils.collections import FallbackSet
+from utils.errors import ConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -108,30 +110,138 @@ class AuditManager:
     #
     # This entire block will be moved to `StateManager` later.
     # ===================================================================
-    def get_high_watermark(self, job_id: str) -> t.Optional[t.Any]:
-        return self._get_high_watermark_internal(job_id)
+    def get_validated_high_watermark(self, job_context: JobContext, silent: t.Optional[bool] = False) -> t.Optional[t.Any]:
+        """
+        Retrieves the high watermark for a job and validates the current job
+        configuration against the stored state.
+        """
+        return self._get_high_watermark_internal(
+            job_id=job_context.job_props_model.job_id,
+            job_context_for_validation=job_context,
+            silent=silent,
+        )
+
+    def get_high_watermark_by_id(self, job_id: str) -> t.Optional[t.Any]:
+        """
+        Retrieves a job's high watermark by its ID without performing any
+        validation against a current configuration.
+        """
+        return self._get_high_watermark_internal(job_id=job_id, silent=True)
     
-    def _get_high_watermark_internal(self, job_id: str) -> t.Optional[t.Any]:
+    def _get_high_watermark_internal(self,
+                                     job_id: str,
+                                     job_context_for_validation: t.Optional[JobContext] = None,
+                                     silent: t.Optional[bool] = False,
+                                     ) -> t.Optional[t.Any]:
+        """
+        Retrieves the last high watermark for a job, performing critical
+        validation checks against the current job configuration.
+        """
         if not job_id:
             return None
         
+        # ==================================================================
+        # RULE 1: Handle FULL load mode explicitly.
+        # ==================================================================
+        if job_context_for_validation:
+            current_props = job_context_for_validation.job_props_model
+            if current_props.data_load_mode == DataLoadMode.FULL:
+                if not silent:
+                    logger.warning(
+                        f"Job '{job_id}' is in 'FULL' load mode. "
+                        "Any existing watermark will be ignored and overwritten upon completion."
+                    )
+                return None
+        
         query = (
-            exp.select("watermark_value", "watermark_value_type")
+            exp.select(
+                "watermark_value", 
+                "watermark_value_type",
+                "watermark_field",
+                "source_type",
+                "source_path",
+                "source_query"
+            )
             .from_(self.STATE_TABLE)
             .where(exp.column("job_id").eq(exp.Literal.string(job_id)))
         )
         result = self.adapter.fetchone(query, quote_identifiers=True)
-        if result:
-            value_str, type_str = result
-            try:
-                watermark = decode_typed_value(value_str, type_str)
-                return watermark
-            except Exception as e:
-                logger.error(f"Could not decode watermark for job '{job_id}'", exc_info=e)
-                raise e
+        if not result:
+            if not silent:
+                logger.debug(f"No previous high watermark found for job '{job_id}'. This is expected for the first run.")
+            return None
         
-        logger.debug(f"No previous high watermark found for job '{job_id}'. This is expected for the first run.")
-        return None
+        (
+            prev_watermark_value_str,
+            prev_watermark_type_str,
+            prev_watermark_field,
+            prev_source_type,
+            prev_source_path,
+            prev_source_query,
+        ) = result
+
+        if job_context_for_validation:
+            # ==================================================================
+            # RULE 2: Source Type (dialect) MUST NOT change. This is a critical error.
+            # ==================================================================
+            current_source_dialect = job_context_for_validation.source_adapter.dialect
+            if prev_source_type and prev_source_type != current_source_dialect:
+                error_msg = (
+                    f"Critical configuration change detected for incremental job '{job_id}'. "
+                    f"Source type cannot be changed. Previous: '{prev_source_type}', Current: '{current_source_dialect}'. "
+                    "To proceed, either revert the source connection type or assign a new `job_id` to start a new incremental history."
+                )
+                if not silent:
+                    logger.error(error_msg)
+                raise ConfigError(error_msg)
+
+            # ==================================================================
+            # RULE 3: Source Path or Query change should trigger a WARNING.
+            # ==================================================================
+            current_source_path = current_props.get_source_path()
+            current_source_query = current_props.source_query
+            if prev_source_path and prev_source_path != current_source_path:
+                if not silent:
+                    logger.warning(
+                        f"Source path may have changed for job '{job_id}'.\n"
+                        f"  - Previous: '{prev_source_path or 'N/A'}'\n"
+                        f"  - Current: '{current_source_path or 'N/A'}'\n"
+                        "Continuing with the stored watermark, but ensure this change was intentional."
+                    )
+        
+            if prev_source_query and prev_source_query != current_source_query:
+                if not silent:
+                    logger.warning(
+                        f"Source query may have changed for job '{job_id}'.\n"
+                        f"  - Previous: '{prev_source_query or 'N/A'}'\n"
+                        f"  - Current: '{current_source_query or 'N/A'}'\n"
+                        "Continuing with the stored watermark, but ensure this change was intentional."
+                    )
+
+            # ==================================================================
+            # RULE 4: Watermark Field change should trigger a WARNING.
+            # ==================================================================
+            current_watermark_field = current_props.source_watermark
+            if prev_watermark_field and prev_watermark_field != current_watermark_field:
+                if not silent:
+                    logger.warning(
+                        f"Watermark field has changed for job '{job_id}'.\n"
+                        f"  - Previous: '{prev_watermark_field}'\n"
+                        f"  - Current: '{current_watermark_field}'\n"
+                        "The incremental load will proceed using the old watermark value against the NEW field. "
+                        "This is usually incorrect unless the column was simply renamed."
+                    )
+
+        # If all checks pass, decode and return the watermark value.
+        try:
+            watermark = decode_typed_value(prev_watermark_value_str, prev_watermark_type_str)
+            if not silent:
+                logger.info(f"Found previous high watermark for job '{job_id}' (Type: {prev_watermark_type_str})")
+            return watermark
+        except Exception as e:
+            if not silent:
+                logger.error(f"Could not decode stored watermark for job '{job_id}'. This may indicate data corruption in the audit store.", exc_info=True)
+            raise e
 
     def update_high_watermark(self, job_context: JobContext, new_watermark_value: t.Any, record_exists: bool):
         self._update_high_watermark_internal(job_context, new_watermark_value, record_exists)

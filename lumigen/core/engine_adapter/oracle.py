@@ -227,9 +227,16 @@ class OracleEngineAdapter(
             super().insert_append(table_name, query_or_df, columns_to_types)
             return
         
+        target_table = exp.to_table(table_name)
         columns_to_types = columns_to_types or columns_to_types_from_df(query_or_df)
         columns_to_types = columns_to_types or self.columns(table_name)
         placeholder_map = self._build_placeholder_map(columns_to_types)
+
+        table_exists = self.table_exists(target_table)
+        if not table_exists:
+            casted_columns = self._casted_columns(columns_to_types)
+            select_schema_exp = exp.select(*casted_columns).from_(exp.to_table("DUAL"), copy=False).where(exp.condition("0=1"), copy=False)
+            self._create_table(target_table, expression=select_schema_exp, exists=False, replace=False)
 
         values_exp = exp.values([tuple(exp.Placeholder(this=placeholder_map[col]) for col in columns_to_types)])
         insert_exp = exp.insert(values_exp, table_name, columns=list(columns_to_types))

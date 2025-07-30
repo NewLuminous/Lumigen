@@ -58,7 +58,7 @@ class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin, QueryBuilderMixin
             "topics": topics,
         }
         if data_load_mode == DataLoadMode.INCREMENTAL and last_watermark_value:
-            op_params["storedOffsets"] = last_watermark_value
+            op_params["stored_offsets"] = last_watermark_value
         return json.dumps({
             "consume": op_params
         })

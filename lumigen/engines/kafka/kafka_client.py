@@ -11,7 +11,7 @@ from sqlglot import exp
 from sqlglot.helper import ensure_list
 from pandas import DataFrame
 from confluent_kafka import Consumer, Producer, Message, KafkaException, TopicPartition, OFFSET_BEGINNING, OFFSET_END
-from confluent_kafka.admin import AdminClient
+from confluent_kafka.admin import AdminClient, NewTopic
 
 from utils import merge_dicts
 from engines.kafka.request_parser import KafkaRequestParser, RequestParseError
@@ -170,10 +170,10 @@ class KafkaClientCursor:
         if parsed_request.consume:
             self._subscribe(
                 topics=parsed_request.consume.topics,
-                stored_offsets=parsed_request.consume.storedOffsets
+                stored_offsets=parsed_request.consume.stored_offsets
             )
         elif parsed_request.produce:
-            message_payload = payload if payload is not None else parsed_request.produce.message or {}
+            message_payload = payload if payload is not None else parsed_request.produce.messages or {}
             messages = ensure_list(message_payload)
             msg: dict
             for msg in messages:
@@ -182,6 +182,12 @@ class KafkaClientCursor:
                     key=msg.get("key"),
                     value=msg.get("value")
                 )
+        elif parsed_request.create:
+            self._create_topic(
+                topic=parsed_request.create.topic,
+                num_partitions=parsed_request.create.num_partitions,
+                replication_factor=parsed_request.create.replication_factor,
+            )
         elif parsed_request.delete:
             self._delete_topics(topics=parsed_request.delete.topics)
         
@@ -253,6 +259,17 @@ class KafkaClientCursor:
                 logger.error(f"FATAL: Message delivery failed: {err}.")
 
         self.producer.produce(topic, value=value, key=key, callback=delivery_report)
+
+    def _create_topic(self, topic: str, num_partitions: t.Optional[int]=1, replication_factor: t.Optional[int]=1, timeout: float=10.0):
+        new_topic = NewTopic(topic, num_partitions, replication_factor)
+        create_response = self._admin.create_topics([new_topic], operation_timeout=timeout)
+        for topic, future in create_response.items():
+            try:
+                future.result()  # Block until the operation is complete
+                logger.info(f"Topic '{topic}' successfully created.")
+            except Exception as e:
+                logger.error(f"Failed to create topic '{topic}'.")
+                raise e
 
     def _delete_topics(self, topics: t.List[str], timeout: float=30.0):
         topics_to_delete = self.filter_topics(topics)
@@ -385,7 +402,7 @@ class KafkaClientConnection:
                  group_id: t.Optional[str] = None, starting_mode: t.Optional[str] = "earliest", config: t.Optional[t.Dict[str, t.Any]] = {}):
         self.bootstrap_servers = bootstrap_servers
         #self.group_id = group_id or KafkaClientConnection._SHARED_RANDOM_GROUP_ID
-        self.group_id = KafkaClientConnection._SHARED_RANDOM_GROUP_ID
+        self.group_id = KafkaClientConnection._SHARED_RANDOM_GROUP_ID # NOTE: Not using provided group id for now
         self.transactional_id = _generate_unique_id()
         self.starting_mode = starting_mode
         self.config = config

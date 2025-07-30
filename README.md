@@ -77,6 +77,11 @@ job_properties:
 *   Python 3.9+
 *   An execution engine environment configured (e.g., local Python with Pandas, or access to a Spark cluster with `SPARK_HOME` set).
 *   For SeaTunnel, `SEATUNNEL_HOME` must be set.
+*   For Kafka Connectivity: `librdkafka`
+    To use the Kafka connector, you must have the `librdkafka` C library installed on your system. The `confluent-kafka-python` library, used by Lumigen, depends on it.
+
+    *   We strongly recommend building `librdkafka` from source to ensure compatibility and access to the latest features. You can find the source code and installation instructions at the official repository: [https://github.com/confluentinc/librdkafka](https://github.com/confluentinc/librdkafka)
+    *   Alternatively, on some systems, you can install it using a package manager (e.g., `brew install librdkafka` on macOS, or `apt-get install librdkafka-dev` on Debian/Ubuntu), but building from source is preferred.
 
 ### Installation
 

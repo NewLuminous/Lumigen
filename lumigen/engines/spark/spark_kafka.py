@@ -2,17 +2,24 @@ from __future__ import annotations
 import typing as t
 import re
 import json
+import uuid
+import tempfile
+import shutil
 import logging
-from confluent_kafka.admin import AdminClient, KafkaException
+from confluent_kafka.admin import AdminClient, NewTopic, KafkaException
 
 if t.TYPE_CHECKING:
     from pyspark.sql import DataFrame, SparkSession
 
 from engines.spark.spark_session import SparkSessionCursor, SparkSessionConnection
 from engines.kafka.request_parser import KafkaRequestParser, RequestParseError
+from utils import merge_dicts
 
 logger = logging.getLogger(__name__)
 
+
+def _generate_unique_id(prefix: str="lumigen") -> str:
+    return f"{prefix}-{uuid.uuid4()}"
 
 class SparkKafkaCursor(SparkSessionCursor):
     LATEST_OFFSET = -1
@@ -22,14 +29,14 @@ class SparkKafkaCursor(SparkSessionCursor):
                  group_id: t.Optional[str] = None, starting_mode: t.Optional[str] = "earliest", kafka_config: t.Optional[t.Dict[str, t.Any]] = {}):
         super().__init__(spark)
         self._admin = admin
-        self.kafka_options = self._kafka_options_factory(bootstrap_servers, group_id, starting_mode, kafka_config)
+        self._bootstrap_servers = bootstrap_servers
+        self._group_id = group_id
+        self._starting_mode = starting_mode
+        self._kafka_config = kafka_config
 
     @classmethod
-    def _kafka_options_factory(cls, bootstrap_servers: str,
-                               group_id: t.Optional[str] = None, starting_mode: t.Optional[str] = "earliest", kafka_config: t.Optional[t.Dict[str, t.Any]] = {}):
+    def _kafka_options_factory(cls, starting_mode: t.Optional[str] = "earliest", kafka_config: t.Optional[t.Dict[str, t.Any]] = {}):
         kafka_options = {
-            "kafka.bootstrap.servers": bootstrap_servers,
-            #"kafka.group.id": group_id, # TODO
             "startingOffsets": starting_mode,
             "failOnDataLoss": True,
             "includeHeaders": True,
@@ -60,18 +67,41 @@ class SparkKafkaCursor(SparkSessionCursor):
         if parsed_request.consume:
             self._subscribe(
                 topics=parsed_request.consume.topics,
-                stored_offsets=parsed_request.consume.storedOffsets
+                stored_offsets=parsed_request.consume.stored_offsets
             )
         elif parsed_request.produce:
             self._produce(parsed_request.produce.topic, payload)
+        elif parsed_request.create:
+            self._create_topic(
+                topic=parsed_request.create.topic,
+                num_partitions=parsed_request.create.num_partitions,
+                replication_factor=parsed_request.create.replication_factor,
+            )
         elif parsed_request.delete:
             self._delete_topics(topics=parsed_request.delete.topics)
+
+    def _create_topic(self, topic: str, num_partitions: t.Optional[int]=1, replication_factor: t.Optional[int]=1, timeout: float=10.0):
+        new_topic = NewTopic(topic, num_partitions, replication_factor)
+        create_response = self._admin.create_topics([new_topic], operation_timeout=timeout)
+        for topic, future in create_response.items():
+            try:
+                future.result()  # Block until the operation is complete
+                logger.info(f"Topic '{topic}' successfully created.")
+            except Exception as e:
+                logger.error(f"Failed to create topic '{topic}'.")
+                raise e
 
     def _subscribe(self, topics: t.List[str], stored_offsets: t.Optional[t.Dict[str, dict]] = None):
         topic_pattern = '|'.join(f"({tn})" for tn in topics)
 
-        kafka_options = self.kafka_options.copy()
-        kafka_options["subscribePattern"] = topic_pattern
+        default_kafka_config = {
+            'bootstrap.servers': self._bootstrap_servers,
+            #'group.id': self._group_id, # NOTE: Not using for now
+        }
+        kafka_config = merge_dicts(default_kafka_config, self._kafka_config)
+        consumer_config = self._kafka_options_factory(self._starting_mode, kafka_config)
+        consumer_config["subscribePattern"] = topic_pattern
+
         if stored_offsets:
             subscribed_topics = self.filter_topics(topics)
             starting_offsets = {}
@@ -88,10 +118,10 @@ class SparkKafkaCursor(SparkSessionCursor):
                     else:
                         starting_offsets[topic_name][partition_id] = stored_offset
             
-            kafka_options["startingOffsets"] = json.dumps(starting_offsets)
+            consumer_config["startingOffsets"] = json.dumps(starting_offsets)
 
-        self._last_df = self._spark.read.format("kafka").options(**kafka_options).load()
-        self._stream_df = self._spark.readStream.format("kafka").options(**kafka_options).load()
+        self._last_df = self._spark.read.format("kafka").options(**consumer_config).load()
+        self._stream_df = self._spark.readStream.format("kafka").options(**consumer_config).load()
         self._last_output = None
         self._last_output_cursor = 0
 
@@ -102,18 +132,49 @@ class SparkKafkaCursor(SparkSessionCursor):
         yield self._stream_df
 
     def _produce(self, topic: str, df: t.Optional[DataFrame] = None):
+        default_kafka_config = {
+            'bootstrap.servers': self._bootstrap_servers,
+        }
+        kafka_config = merge_dicts(default_kafka_config, self._kafka_config)
+        producer_config = self._kafka_options_factory(self._starting_mode, kafka_config)
+        producer_config["topic"] = topic
+
         if df.isStreaming:
-            writer = df.writeStream.format("kafka")
-            writer = writer.option("kafka.bootstrap.servers", self.kafka_options["kafka.bootstrap.servers"])
-            writer = writer.option("topic", topic)
-            writer = writer.option("includeHeaders", True)
-            #writer = writer.option("checkpointLocation", f"/spark-ckpts/{kafka_options.get('kafka.group.id', topic)}")
-            writer.outputMode("append").start().awaitTermination()
+            writer = df.writeStream.format("kafka").options(**producer_config)
+
+            checkpoint_location = self._spark.conf.get("spark.sql.streaming.checkpointLocation", None)
+            temp_dir_to_clean = None
+            if not checkpoint_location:
+                try:
+                    temp_dir_to_clean = tempfile.mkdtemp(prefix="spark-tmp-ckpt_")
+                    checkpoint_location = f"file://{temp_dir_to_clean}"
+                    logger.info(
+                        f"No spark.sql.streaming.checkpointLocation configured. "
+                        f"Using temporary checkpoint for this write: {checkpoint_location}"
+                    )
+                except Exception as e:
+                    logger.error("Failed to create temporary checkpoint directory for Kafka sink.", exc_info=True)
+                    raise RuntimeError("Could not create a temporary directory for Spark checkpointing.") from e
+            writer = writer.option("checkpointLocation", checkpoint_location)
+            
+            try:
+                query = writer.outputMode("append").start()
+                logger.info(f"Spark streaming Kafka producer '{query.name}' started. Awaiting termination...")
+                query.awaitTermination()
+                logger.info(f"Spark streaming Kafka producer '{query.name}' terminated.")
+            finally:
+                if temp_dir_to_clean:
+                    try:
+                        logger.info(f"Cleaning up temporary checkpoint directory: {temp_dir_to_clean}")
+                        shutil.rmtree(temp_dir_to_clean)
+                        logger.debug("Temporary directory successfully removed.")
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to clean up temporary Kafka sink checkpoint directory: {temp_dir_to_clean}. "
+                            f"Manual cleanup may be required. Error: {e}"
+                        )
         else:
-            writer = df.write.format("kafka")
-            writer = writer.option("kafka.bootstrap.servers", self.kafka_options["kafka.bootstrap.servers"])
-            writer = writer.option("topic", topic)
-            writer = writer.option("includeHeaders", True)
+            writer = df.write.format("kafka").options(**producer_config)
             writer.mode("append").save()
 
     def _delete_topics(self, topics: t.List[str], timeout: float=30.0):

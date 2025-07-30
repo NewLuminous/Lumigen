@@ -168,7 +168,7 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
     ) -> t.Tuple[str, t.Dict]:
         """Parses the SQL, validates it, and rewrites it to use temporary views."""
         select_exp = SQL.parse_and_validate_query(query, source, **kwargs)
-        origin2tmp, origin2fetch_query = SQL._rewrite_query_using_temp_views(select_exp, source)
+        origin2tmp, origin2fetch_query = SQL._rewrite_query_using_temp_views(select_exp, source, is_global_temp=False)
             
         # --- Temp Table Creation and Query Rewriting Logic ---
         for origin_table, fetch_query in origin2fetch_query.items():

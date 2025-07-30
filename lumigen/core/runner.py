@@ -54,7 +54,7 @@ class JobRunner(ABC):
 
         last_watermark = None
         if job_props.data_load_mode == DataLoadMode.INCREMENTAL:
-            last_watermark = context.audit_manager.get_high_watermark(job_props.job_id)
+            last_watermark = context.audit_manager.get_validated_high_watermark(context, silent=True)
 
         if isinstance(reader, QueryBuilderMixin):
             # The adapter knows best how to build its query.
