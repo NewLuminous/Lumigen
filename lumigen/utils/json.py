@@ -3,6 +3,7 @@ import json
 import base64
 import datetime
 import numpy as np
+from decimal import Decimal
 
 
 class PortableJSONEncoder(json.JSONEncoder):
@@ -15,6 +16,8 @@ class PortableJSONEncoder(json.JSONEncoder):
             return base64.b64encode(obj).decode('utf-8')
         elif isinstance(obj, (datetime.datetime, datetime.date, datetime.time)):
             return obj.isoformat()
+        elif isinstance(obj, Decimal):
+            return str(obj)
         
         if isinstance(obj, np.integer):
             return int(obj)
@@ -47,6 +50,7 @@ def _get_value_type_name(value: t.Any) -> str:
     if isinstance(value, datetime.datetime): return 'datetime'
     if isinstance(value, datetime.date): return 'date'
     if isinstance(value, datetime.time): return 'time'
+    if isinstance(value, Decimal): return 'Decimal'
     if isinstance(value, np.integer): return 'int'
     if isinstance(value, np.floating): return 'float'
     if isinstance(value, np.ndarray): return 'numpy.ndarray'
@@ -88,6 +92,7 @@ def decode_typed_value(value_str: str, type_str: str) -> t.Any:
     if type_str == 'datetime': return datetime.datetime.fromisoformat(value)
     if type_str == 'date': return datetime.date.fromisoformat(value)
     if type_str == 'time': return datetime.time.fromisoformat(value)
+    if type_str == 'Decimal': return Decimal(value)
     if type_str == 'numpy.ndarray': return np.array(value)
 
     return value

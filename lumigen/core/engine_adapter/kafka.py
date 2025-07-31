@@ -180,7 +180,10 @@ class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin, QueryBuilderMixin
     def columns(
         self, topics: str, include_pseudo_columns: bool = False
     ) -> t.Dict[str, exp.DataType]:
-        return MESSAGE_SCHEMA
+        if self.table_exists(topics):
+            return MESSAGE_SCHEMA
+        else:
+            return {}
 
     def table_exists(self, topics: str) -> bool:
         topic_list = [tn.strip() for tn in topics.split(',')]
