@@ -13,7 +13,7 @@ from config.environment import settings
 from core.job_context import RuntimeEnvironment
 from core.runner import JobRunner
 from utils import hocon
-from entry_points.launchers import submit_job
+from utils.processes import submit_job
 
 logger = logging.getLogger(__name__)
 

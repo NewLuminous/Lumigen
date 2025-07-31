@@ -32,7 +32,7 @@ classifiers = [
 ]
 
 [project.scripts]
-lumigen = "lumigen.entry_points.app:main"
+lumigen = "lumigen.main:main"
 
 [project.urls]
 Homepage = "https://github.com/newluminous/lumigen"

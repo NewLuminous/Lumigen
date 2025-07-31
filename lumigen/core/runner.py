@@ -119,14 +119,14 @@ def get_runner(config: Config) -> JobRunner:
         config.job_properties.get("seatunnel_transform") or
         config.job_properties.get("seatunnel_env")):
         logger.info("SeaTunnel configuration found. Setting SeaTunnel as the main engine...")
-        from entry_points.runners.seatunnel_runner import SeaTunnelJobRunner
+        from runners.seatunnel_runner import SeaTunnelJobRunner
         return SeaTunnelJobRunner(config)
     
     if isinstance(config.executor, SparkConnectionConfig):
-        from entry_points.runners.spark_runner import SparkJobRunner
+        from runners.spark_runner import SparkJobRunner
         logger.info("Spark executor configured. Using SparkJobRunner.")
         return SparkJobRunner(config)
     
-    from entry_points.runners.python_runner import PythonJobRunner
+    from runners.python_runner import PythonJobRunner
     logger.info("Defaulting to standard Python runner.")
     return PythonJobRunner(config)

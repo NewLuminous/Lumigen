@@ -2,12 +2,15 @@ from __future__ import annotations
 import logging
 import os
 import argparse
+import sys
+
 from config.environment import settings
 from config.logging import setup_logger, ExitCapableLogger
 from core.config.loader import load_config
 from core.engine_context import SQLContextManager
 from core.runner import JobRunner, get_runner
-from entry_points.launchers import submit_job
+from utils.processes import submit_job
+from runners.spark_runner import SparkJobRunner
 
 
 def run_spark_job(runner: JobRunner, config_path: str, logger: ExitCapableLogger) -> int | None:
@@ -25,12 +28,13 @@ def run_spark_job(runner: JobRunner, config_path: str, logger: ExitCapableLogger
         spark_submit_options.append(f"--{k}")
         spark_submit_options.append(str(v))
 
-    pyspark_app_path = os.path.join(os.path.dirname(__file__), "app_pyspark.py")
+    main_script_path = os.path.abspath(__file__)
 
     spark_submit_cmd = [
         os.path.join(settings.SPARK_HOME, "bin", settings.SPARK_EXECUTABLE),
         *spark_submit_options,
-        pyspark_app_path,
+        main_script_path,
+        "--spark-driver",
     ]
     if config_path:
         spark_submit_cmd.extend(["--config", config_path])
@@ -44,15 +48,30 @@ def main():
 
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument("-c", "--config", type=str, required=False, default="", help="Config file")
+
+    # internal flag, MUST NOT be provided by user
+    arg_parser.add_argument("--spark-driver", action="store_true", help=argparse.SUPPRESS)
+    
     args = arg_parser.parse_args()
+
+    if args.spark_driver:
+        # --- SPARK DRIVER MODE ---
+        logger.info("Running in Spark Driver mode.")
+        job_cfg = load_config(path=args.config)
+        with SQLContextManager.get_instance() as manager:
+            runner = SparkJobRunner(job_cfg)
+            runner.run()
+        sys.exit(0)
+
+    # --- LAUNCHER MODE (default) ---
+    logger.info("Running in Launcher mode.")
     job_cfg = load_config(path=args.config)
     with SQLContextManager.get_instance() as manager:
         runner = get_runner(job_cfg)
 
         # Check the type of the runner to decide how to execute it
-        from entry_points.runners.spark_runner import SparkJobRunner
         if isinstance(runner, SparkJobRunner):
-            # Spark jobs should be submitted as a separate process
+            # Spark jobs should be submitted as a separate process with the --spark-driver flag.
             run_spark_job(runner, args.config, logger)
         else:
             # Other runners (Python, etc.) can run in the current process
