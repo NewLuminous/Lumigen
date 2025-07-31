@@ -53,7 +53,7 @@ class DockerAdapter(JobManagerAdapter):
 
         self._refresh_job_dict()
 
-    def submit_job(self, config: Config, id: str, name: t.Optional[str]=None, checkpoint_dir: t.Optional[str]=None) -> JobStatusResponse:
+    def _perform_submit(self, config: Config, id: str, name: t.Optional[str]=None, checkpoint_dir: t.Optional[str]=None) -> JobStatusResponse:
         id = DockerAdapter._normalize_job_id(id)
         if name is None:
             name = settings.JOB_IMAGE_NAME
@@ -137,12 +137,7 @@ class DockerAdapter(JobManagerAdapter):
                     volumes[checkpoint_dir] = {'bind': '/spark-ckpts', 'mode': 'rw'}
                     os.makedirs(checkpoint_dir, exist_ok=True)
 
-                command = ["python", "entry_points/app.py"]
-                exec_cfg = config.get_executor()
-                if exec_cfg and exec_cfg.type_ == "spark":
-                    command = ["spark-submit", "entry_points/app_pyspark.py"]
-                command.extend(["-c", temp_config_file_container_path])
-
+                command = self._build_command(config, temp_config_file_container_path, is_preview=False)
                 container = self.client.containers.run(
                     detach=True,        # Run in the background
                     auto_remove=False,
@@ -458,11 +453,7 @@ class DockerAdapter(JobManagerAdapter):
                 os.chmod(temp_config_file_host_path, 0o644) # Sets rw-r--r--
                 volumes[temp_config_file_host_path] = {'bind': temp_config_file_container_path, 'mode': 'ro'}
 
-            # Run in local mode for now
-            # If spark-submit later, may need to reimplement how to parse log
-            # since spark-submit prints errors to STDOUT.
-            command = ["python", "api/entry_points/app_preview.py"]
-            command.extend(["-c", temp_config_file_container_path])
+            command = self._build_command(config, temp_config_file_container_path, is_preview=True)
 
             # --- Offload blocking Docker call to a thread ---
             docker_result = await asyncio.to_thread(

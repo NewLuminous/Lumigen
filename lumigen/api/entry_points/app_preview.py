@@ -1,31 +1,31 @@
 from __future__ import annotations
 import typing as t
 import argparse
-import base64
 import json
-import datetime
 from pydantic import BaseModel
-import numpy as np
-import pyspark
-import pandas as pd
+import pyspark.sql as pyspark_sql
 from functools import partial
-from sqlglot import exp
+from sqlglot import exp, Dialect
 import logging
+
+if t.TYPE_CHECKING:
+    from core._typing import DataFrameType
+
 from config.logging import setup_logger
 from core.config.loader import load_config
 from core.config.root import Config
 from core.config.connection import parse_connection_config
 from core.engine_context import SQLContextManager
-from core.engine_adapter import dialect_insensitive_tbl_name, SparkEngineAdapter
-from core.engine_adapter.mixins import FetchBatchMixin
+from core.engine_adapter import SparkEngineAdapter
+from core.engine_adapter.mixins import FetchBatchMixin, QueryBuilderMixin
 from core.adapters import validate_connections
 from core.execution import transform_data
 from core.job_context import JobContext, JobContextBuilder
 import transformers
 from utils import FallbackKeyDict
+from utils.json import DisplayableJSONEncoder
 from utils.dataset import DataFrameConverter, columns_to_types_from_df
-
-DataFrameType = t.TypeVar("DataFrameType", "pyspark.sql.DataFrame", "pd.DataFrame")
+from utils.parsing import dialect_insensitive_tbl_name
 
 logger = logging.getLogger(__name__)
 
@@ -42,19 +42,6 @@ class SchemaField(BaseModel):
     name: str
     type: str
 
-class CustomJSONEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, (bytearray, bytes)):
-            try:
-                return "b'" + obj.decode('latin-1') + "'"
-            except UnicodeDecodeError:
-                return base64.b64encode(obj).decode('utf-8')
-        elif isinstance(obj, (datetime.datetime, datetime.date, datetime.time)):
-            return obj.isoformat() # Use standard ISO 8601 format
-        elif isinstance(obj, np.ndarray):
-            return obj.tolist()
-        return json.JSONEncoder.default(self, obj)
-
 class PreviewRunner:
     """
     Encapsulates all logic for generating a data preview or schema diff.
@@ -66,7 +53,7 @@ class PreviewRunner:
             self.exec_cfg = self._resolve_executor()
         else:
             self.exec_cfg = self.config.executor
-        self.context_builder = JobContextBuilder(config, executor_override=self.exec_cfg)
+        self.context_builder = JobContextBuilder(config, None, executor_override=self.exec_cfg)
 
     def _resolve_executor(self):
         """Determines if a Spark executor is required, e.g., for SQL UDFs."""
@@ -98,26 +85,25 @@ class PreviewRunner:
         ) -> t.Optional[int]:
         if do_validate_connections:
             validate_connections([self.config.source, self.config.sink])
-        job_context = self.context_builder.build()
+        with self.context_builder.build() as job_context:
+            lazy_dataset = self._read_data(job_context)
+            trans_chain = transform_data(self.config.transformation_pipeline, job_context)
+            if not self.config.sink:
+                logger.info("No sink configured. Will preview transformed source data.")
+                trans_chain.add(partial(self._run_data_preview, job_context, callback))
+            else:
+                logger.info("Sink configured. Will generate a schema diff.")
+                trans_chain.add(partial(self._run_schema_diff, job_context, callback))
 
-        lazy_dataset = self._read_data(job_context)
-        trans_chain = transform_data(self.config.transformation_pipeline, job_context.job_props)
-        if not self.config.sink:
-            logger.info("No sink configured. Will preview transformed source data.")
-            trans_chain.add(partial(self._run_data_preview, job_context, callback))
-        else:
-            logger.info("Sink configured. Will generate a schema diff.")
-            trans_chain.add(partial(self._run_schema_diff, job_context, callback))
-
-        for df in lazy_dataset:
-            trans_chain.apply(df)
+            for df in lazy_dataset:
+                trans_chain.apply(df)
 
         return 0
     
     def _read_data(self, context: JobContext) -> t.Iterator[DataFrameType]:
         """Reads a single batch of data from the source, respecting the preview limit."""
         reader = context.source_adapter
-        query = context.build_source_expression()
+        query = self._get_source_query(context)
         limit = context.job_props.get("source_limit")
 
         if isinstance(reader, SparkEngineAdapter):
@@ -135,10 +121,23 @@ class PreviewRunner:
             yield reader.fetchdf(query)
         return
     
+    def _get_source_query(self, context: JobContext) -> t.Any:
+        reader = context.source_adapter
+        job_props = context.job_props_model
+
+        if isinstance(reader, QueryBuilderMixin):
+            return reader.build_query(
+                path=job_props.source_path,
+                query=job_props.source_query,
+            )
+        if Dialect.get(reader.dialect):
+            return context.build_source_expression()
+        raise NotImplementedError(f"Non-standard dialect '{reader.dialect}'.")
+    
     def _run_data_preview(self, context: JobContext, callback: t.Callable[[str], t.Any], df: DataFrameType):
         """Final pipeline step: samples data and prints it as JSON."""
         num_rows_to_fetch = context.job_props.get("source_batch_size") or 20
-        if isinstance(df, pyspark.sql.DataFrame):
+        if isinstance(df, pyspark_sql.DataFrame):
             df_sample = df.limit(num_rows_to_fetch)
         else:
             df_sample = df.head(num_rows_to_fetch)
@@ -159,14 +158,14 @@ class PreviewRunner:
             "schema": schema_fields,
             "data": rows_as_dicts
         }
-        callback(json.dumps(payload, cls=CustomJSONEncoder))
+        callback(json.dumps(payload, cls=DisplayableJSONEncoder))
 
     def _run_schema_diff(self, context: JobContext, callback: t.Callable[[str], t.Any], df: DataFrameType):
         """Final pipeline step: compares transformed schema with sink and prints diff as JSON."""
         writer = context.sink_adapter
         source_columns = columns_to_types_from_df(df)
         
-        sink_table = context.job_props_model.get_sink_table()
+        sink_table = context.job_props_model.get_sink_path()
         sink_table = dialect_insensitive_tbl_name(sink_table, writer.dialect)
         if sink_table and writer.table_exists(sink_table):
             destination_columns = writer.columns(sink_table)

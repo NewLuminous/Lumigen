@@ -2,10 +2,15 @@ import typing as t
 from fastapi import APIRouter, Depends, HTTPException
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from sqlglot.errors import ParseError
 from sqlmesh.utils.errors import SQLMeshError
-from core.engine_adapter import dialect_insensitive_tbl_name
+
+if t.TYPE_CHECKING:
+    from core.engine_adapter.mixins import EngineAdapterMixin
+
 from utils import FallbackKeyDict
+from utils.parsing import dialect_insensitive_tbl_name
 from api.enums import DataObjectType
 from api.schemas import parse_connection, SchemaField, SchemaMappingRequest, ConnectionColumnMapping
 from api.dependencies import get_custom_executor
@@ -29,7 +34,7 @@ async def list_data_objects(conn_config: t.Dict[str, t.Any],
                             executor: ThreadPoolExecutor = Depends(get_custom_executor)):
     loop = asyncio.get_running_loop()
     conn = await loop.run_in_executor(executor, parse_connection, conn_config)
-    engine_adapter = conn.create_engine_adapter()
+    engine_adapter = t.cast("EngineAdapterMixin", conn.create_engine_adapter())
     try:
         data_objects = await loop.run_in_executor(executor, engine_adapter.get_all_data_objects, keyword)
     except:
@@ -54,41 +59,41 @@ async def list_data_objects(conn_config: t.Dict[str, t.Any],
 
     return tbl_or_views
 
+@router.post("/exists", response_model=t.Dict[str, t.Any])
+async def table_exists(conn_config: t.Dict[str, t.Any], table: str,
+                       executor: ThreadPoolExecutor = Depends(get_custom_executor)):
+    async with database_operation_handler(conn_config, table, executor) as (engine_adapter, table_name):
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(executor, engine_adapter.table_exists, table_name)
+        
+        if not result:
+            raise HTTPException(status_code=404, detail=f"Table '{table}' not found.")
+            
+        return {"detail": f"Table '{table}' exists."}
+
 @router.post("/describe", response_model=t.Dict[str, str])
 async def describe_table(conn_config: t.Dict[str, t.Any], table: str,
                          executor: ThreadPoolExecutor = Depends(get_custom_executor)):
-    if not table:
-        raise HTTPException(status_code=400, detail=f"Table name is required.")
-    loop = asyncio.get_running_loop()
-    conn = await loop.run_in_executor(executor, parse_connection, conn_config)
-    engine_adapter = conn.create_engine_adapter()
-    try:
-        table_name = dialect_insensitive_tbl_name(table, engine_adapter.dialect)
-        table_columns = await loop.run_in_executor(executor, engine_adapter.columns, table_name)
-    except ParseError as e:
-        err_msg = str(e)
-        if err_msg.startswith("No ") and "'" in err_msg:
-            data_type = err_msg.split("'")[1]
-            raise HTTPException(status_code=500, detail=f"Unknown data type: {data_type}")
-        elif err_msg.startswith("Failed ") and "'" in err_msg:
+    async with database_operation_handler(conn_config, table, executor) as (engine_adapter, table_name):
+        loop = asyncio.get_running_loop()
+        try:
+            table_columns = await loop.run_in_executor(executor, engine_adapter.columns, table_name)
+        except ParseError as e:
+            err_msg = str(e)
+            if err_msg.startswith("No ") and "'" in err_msg:
+                data_type = err_msg.split("'")[1]
+                raise HTTPException(status_code=500, detail=f"Unknown data type: {data_type}")
+            else:
+                raise HTTPException(status_code=500, detail=f"{e}")
+            
+        try:
+            table_schema = {k: v.sql(dialect=engine_adapter.dialect) for k, v in table_columns.items()}
+        except ValueError:
+            table_schema = {k: v.sql() for k, v in table_columns.items()}
+        if not table_schema:
             raise HTTPException(status_code=404, detail=f"Table {table} not found.")
-        else:
-            raise HTTPException(status_code=500, detail=f"{e}")
-    except SQLMeshError as e:
-        if "Table not found" in str(e):
-            raise HTTPException(status_code=404, detail=f"Table {table} not found.")
-        else:
-            raise HTTPException(status_code=500, detail=f"{e}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{e}")
-        
-    try:
-        table_schema = {k: v.sql(dialect=engine_adapter.dialect) for k, v in table_columns.items()}
-    except ValueError:
-        table_schema = {k: v.sql() for k, v in table_columns.items()}
-    if not table_schema:
-        raise HTTPException(status_code=404, detail=f"Table {table} not found.")
-    return table_schema
+            
+        return table_schema
 
 @router.post("/schema-mapping", response_model=ConnectionColumnMapping)
 async def schema_mapping(schemas: SchemaMappingRequest):
@@ -173,3 +178,40 @@ async def schema_mapping(schemas: SchemaMappingRequest):
         "unmapped_destination_columns": unmapped_destination_columns,
     }
     return result
+
+@asynccontextmanager
+async def database_operation_handler(
+    conn_config: t.Dict[str, t.Any],
+    table: str,
+    executor: ThreadPoolExecutor
+):
+    """
+    Handles the boilerplate of creating an engine adapter and manages
+    common exceptions for database operations.
+    """
+    if not table:
+        raise HTTPException(status_code=400, detail="Table name is required.")
+
+    loop = asyncio.get_running_loop()
+    try:
+        conn = await loop.run_in_executor(executor, parse_connection, conn_config)
+        engine_adapter = conn.create_engine_adapter()
+        table_name = dialect_insensitive_tbl_name(table, engine_adapter.dialect)
+        
+        # Yield the ready-to-use objects to the endpoint
+        yield engine_adapter, table_name
+    except ParseError as e:
+        err_msg = str(e)
+        if err_msg.startswith("Failed ") and "'" in err_msg:
+            raise HTTPException(status_code=404, detail=f"Table '{table}' not found.")
+        else:
+            raise HTTPException(status_code=500, detail=f"{e}")
+    except SQLMeshError as e:
+        if "Table not found" in str(e):
+            raise HTTPException(status_code=404, detail=f"Table '{table}' not found.")
+        else:
+            raise HTTPException(status_code=500, detail=f"{e}")
+    except Exception as e:
+        if isinstance(e, HTTPException):
+             raise e
+        raise HTTPException(status_code=500, detail=str(e))

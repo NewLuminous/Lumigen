@@ -23,14 +23,13 @@ from api.enums import JobStatus
 from api.schemas import JobStatusResponse, JobInfoResponse, JobMetricsResponse, DataFetchResponse
 from api.integrations.base_adapter import JobManagerAdapter
 from api.integrations.parser import PySparkLogParser
-from api.services.job_previewer import JobPreviewerBase
 from api.entry_points.app_preview import DATA_START_DELIMITER, DATA_END_DELIMITER
 
 
 logger = logging.getLogger(__name__)
 _kubernetes_adapter_instance: "KubernetesAdapter" = None
 
-class KubernetesAdapter(JobManagerAdapter, JobPreviewerBase):
+class KubernetesAdapter(JobManagerAdapter):
     """
     Manages ETL jobs as Kubernetes Jobs.
     
@@ -93,7 +92,7 @@ class KubernetesAdapter(JobManagerAdapter, JobPreviewerBase):
         except Exception as e:
             logger.error(f"Error detecting host timezone, defaulting to UTC. Reason: {e}")
 
-    def submit_job(self, config: Config, id: str, name: t.Optional[str] = None, checkpoint_dir: t.Optional[str]=None) -> JobStatusResponse:
+    def _perform_submit(self, config: Config, id: str, name: t.Optional[str] = None, checkpoint_dir: t.Optional[str]=None) -> JobStatusResponse:
         id_in_k8s_name = self._normalize_k8s_name(id)
         name_in_k8s_name = self._normalize_k8s_name(name)
         resource_name = f"{name_in_k8s_name}{self._SEPARATOR}{id_in_k8s_name}"
@@ -639,14 +638,8 @@ class KubernetesAdapter(JobManagerAdapter, JobPreviewerBase):
                                checkpoint_dir: t.Optional[str]=None,
                                ttl_override: t.Optional[int]=None) -> client.V1Job:
         is_preview = "preview" in resource_name.lower()
-        if not is_preview:
-            exec_cfg = config.get_executor()
-            command = ["python", "entry_points/app.py"]
-            if exec_cfg and exec_cfg.type_ == "spark":
-                command = ["spark-submit", "entry_points/app_pyspark.py"]
-        else:
-            command = ["python", "api/entry_points/app_preview.py"]
-        command.extend(["-c", "/config/config.yaml"])
+        config_path_in_pod = "/config/config.yaml" 
+        command = self._build_command(config, config_path_in_pod, is_preview=is_preview)
 
         pod_template = self._create_k8s_pod_template_spec(resource_name, labels, config, command, checkpoint_dir)
         job_mode = config.job_properties.get("job_mode", JobMode.BATCH)

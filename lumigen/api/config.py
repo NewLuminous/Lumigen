@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     MAX_KEPT_JOBS_PER_NAME: int = Field(default=3,
                                         description="Maximum number of job history to keep for each job name.")
     
+    # Spark settings
+    SPARK_MASTER: str = Field(
+        default="local[*]",
+        description="The --master argument for spark-submit. Examples: 'local[*]', 'yarn', or 'k8s://<api_server>'."
+    )
+    
     @model_validator(mode='after')
     def calculate_derived_settings(self) -> 'Settings':
         self.PREVIEW_JOB_CONCURRENCY_LIMIT = max(self.MAX_WORKER_THREADS // 2, 10)
