@@ -81,13 +81,13 @@ class JobManagerAdapter(JobPreviewerBase, ABC):
             A list of strings representing the command and its arguments.
         """
         if not is_preview:
-            return ["python", "entry_points/app.py", "-c", config_path_in_container]
+            return ["python", "main.py", "-c", config_path_in_container]
 
         exec_cfg = config.get_executor()
         if exec_cfg and exec_cfg.type_ == "spark":
-            command = ["spark-submit", "api/entry_points/app_preview.py"]
+            command = ["spark-submit", "api/tools/preview_worker.py"]
         else:
-            command = ["python", "api/entry_points/app_preview.py"]
+            command = ["python", "api/tools/preview_worker.py"]
             
         command.extend(["-c", config_path_in_container])
         return command

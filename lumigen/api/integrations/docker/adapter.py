@@ -29,7 +29,7 @@ from api.integrations.base_adapter import JobManagerAdapter
 from api.integrations.parser import PySparkLogParser
 from api.integrations.docker.enums import ContainerStatus
 from api.integrations.docker.schemas import ContainerInfo
-from api.entry_points.app_preview import PreviewRunner, DATA_START_DELIMITER, DATA_END_DELIMITER
+from api.tools.preview_worker import PreviewRunner, DATA_START_DELIMITER, DATA_END_DELIMITER
 
 
 logger = logging.getLogger(__name__)

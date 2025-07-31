@@ -23,7 +23,7 @@ from api.enums import JobStatus
 from api.schemas import JobStatusResponse, JobInfoResponse, JobMetricsResponse, DataFetchResponse
 from api.integrations.base_adapter import JobManagerAdapter
 from api.integrations.parser import PySparkLogParser
-from api.entry_points.app_preview import DATA_START_DELIMITER, DATA_END_DELIMITER
+from api.tools.preview_worker import DATA_START_DELIMITER, DATA_END_DELIMITER
 
 
 logger = logging.getLogger(__name__)

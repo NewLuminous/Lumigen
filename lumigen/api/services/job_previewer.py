@@ -8,7 +8,7 @@ from core.config.connection import parse_connection_config
 from core.engine_context import SQLContextManager, SparkStatus
 import transformers
 from api.schemas import JobPreviewResponse, JobColumnMapping, DataFetchResponse
-from api.entry_points.app_preview import PreviewRunner
+from api.tools.preview_worker import PreviewRunner
 
 
 logger = logging.getLogger(__name__)
