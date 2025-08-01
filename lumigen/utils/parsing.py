@@ -1,10 +1,11 @@
 from __future__ import annotations
 import typing as t
 import re
-from sqlglot import exp, parse_one, ParseError
+from sqlglot import exp, parse_one, ParseError, Dialect
 
 if t.TYPE_CHECKING:
     from core._typing import TableName
+    from sqlglot import DialectType
 
 
 def extract_params(string: str) -> t.List[str]:
@@ -72,32 +73,40 @@ def parse_into_select_exp(query: t.Union[exp.Expression, str], dialect: t.Option
             "Input must be a SQL string or a SQLGlot Expression."
         )
 
-def extract_main_table(query: t.Union[exp.Expression, str], quoted: t.Optional[bool] = None) -> str:
+def extract_main_table(query: t.Union[exp.Expression, str],
+                       dialect: DialectType = None,
+                       quoted: t.Optional[bool] = None,
+                       ) -> str:
     """
     Tries to extract the main table from a SQL query.
 
     This function robustly finds the first table in the FROM clause,
     handling simple joins and ignoring tables within subqueries or CTEs.
 
-    Args:
-        query: A SQL query string or a sqlglot Expression.
-
     Returns:
         The normalized name of the main table as a string
     """
     if not isinstance(query, exp.Expression):
-        select_exp = parse_one(query, into=exp.Select)
+        if dialect and Dialect.get(dialect):
+            select_exp = parse_one(query, dialect=dialect, into=exp.Select)
+        else:
+            select_exp = parse_one(query, into=exp.Select)
     else:
         select_exp = query
 
     from_exp = select_exp.find(exp.From) or select_exp
     table_exp = from_exp.find(exp.Table) or from_exp
-    table_name = table_exp.find(exp.Identifier) or table_exp
+    if isinstance(table_exp, exp.Table):
+        table_name = table_exp
+    else:
+        table_name = table_exp.find(exp.Identifier)
 
     if not isinstance(table_name, (exp.Identifier, exp.Table)):
         raise ValueError(f"Could not extract a main table from the query: {str(query)[:100]}...")
-    if quoted is not None and isinstance(table_name, exp.Identifier):
-        table_name.args["quoted"] = quoted
+    if quoted is not None:
+        for identifier_exp in table_name.find_all(exp.Identifier):
+            identifier_exp.set("quoted", quoted)
+
     return table_name.sql()
 
 def dialect_insensitive_tbl_name(table_name: TableName, from_dialect: str) -> str:

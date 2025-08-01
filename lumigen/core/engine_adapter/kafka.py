@@ -46,7 +46,7 @@ class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin, QueryBuilderMixin
     ) -> t.Any:
         if query:
             try:
-                topics_str = extract_main_table(query, quoted=False)
+                topics_str = extract_main_table(query, dialect="kafka", quoted=False)
             except:
                 topics_str = query
         if path:

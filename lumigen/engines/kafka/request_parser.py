@@ -2,8 +2,10 @@ from __future__ import annotations
 import typing as t
 import json
 from pydantic import BaseModel, ValidationError, model_validator
-from sqlglot import exp, parse_one
+from sqlglot import exp
+from sqlglot import parse as sqlglot_parse
 from utils.parsing import extract_main_table
+from engines.kafka.dialect import Kafka
 
 # ===================================================================
 # Custom Exceptions
@@ -106,6 +108,8 @@ class KafkaRequestParser:
                     return KafkaSQLParser.parse(request_str)
                 except SQLParseError as spe:
                     raise spe from None
+                except RequestParseError as rpe:
+                    raise rpe from None
                 except Exception:
                     raise e
         except json.JSONDecodeError as e:
@@ -119,8 +123,19 @@ class KafkaSQLParser:
     This provides a familiar, SQL-based interface for interacting with Kafka.
     """
     @staticmethod
-    def parse(sql: str, exp_type: t.Optional[exp.Expression] = None) -> KafkaRequest:
-        parsed_exp = parse_one(sql, into=exp_type)
+    def parse(sql: str) -> KafkaRequest:
+        """
+        Parses a single SQL-like statement and translates it into a KafkaRequest.
+        """
+        all_exps = sqlglot_parse(sql, dialect=Kafka)
+
+        parsed_exp = all_exps[0] if all_exps else None
+        if not parsed_exp:
+            raise SQLParseError("Invalid request: The SQL statement is empty.")
+
+        if len(all_exps) > 1:
+            raise RequestParseError("Invalid request: Only a single SQL statement is supported.")
+
         try:
             if isinstance(parsed_exp, exp.Create):
                 return KafkaSQLParser._build_create_request(parsed_exp)
@@ -133,19 +148,23 @@ class KafkaSQLParser:
         except Exception as e:
             raise SQLParseError(str(e))
 
-        raise SQLParseError(f"Unsupported SQL statement type: '{parsed_exp}'")
+        raise SQLParseError(f"Unsupported SQL statement of type: '{type(parsed_exp).__name__.upper()}'")
 
     @staticmethod
     def _build_create_request(create_exp: exp.Create) -> KafkaRequest:
-        data = {}
-        data["create"] = {}
+        data = {"create": {}}
 
-        table_exp = None
-        if create_exp.kind == "TABLE":
-            table_exp = t.cast("exp.Expression", create_exp.this).find(exp.Table)
-        if not table_exp:
+        if create_exp.kind.upper() != "TABLE":
             raise SQLParseError(f"Invalid CREATE statement. Must be 'CREATE TABLE'. Found 'CREATE {create_exp.kind}'.")
-        data["create"]["topic"] = table_exp.sql()
+        
+        topics_str = extract_main_table(create_exp, dialect=Kafka, quoted=False)
+        topics = [tp.strip() for tp in topics_str.split(',')]
+        if len(topics) == 0:
+            raise SQLParseError("Invalid request: Empty topic.")
+
+        if len(topics) > 1:
+            raise SQLParseError("Invalid request: Only support creating one topic at a time.")
+        data["create"]["topic"] = topics[0]
 
         properties_exp: exp.Properties = create_exp.args["properties"]
         if properties_exp:
@@ -161,18 +180,16 @@ class KafkaSQLParser:
     
     @staticmethod
     def _build_consume_request(select_exp: exp.Select) -> KafkaRequest:
-        data = {}
-        data["consume"] = {}
+        data = {"consume": {}}
 
-        topics_str = extract_main_table(select_exp, quoted=False)
+        topics_str = extract_main_table(select_exp, dialect=Kafka, quoted=False)
         topics = [tp.strip() for tp in topics_str.split(',')]
         data["consume"]["topics"] = topics
         return KafkaRequest.model_validate(data)
     
     @staticmethod
     def _build_produce_request(insert_exp: exp.Insert) -> KafkaRequest:
-        data = {}
-        data["produce"] = {}
+        data = {"produce": {}}
 
         table_exp = t.cast("exp.Expression", insert_exp.this).find(exp.Table)
         if not table_exp:
@@ -202,11 +219,13 @@ class KafkaSQLParser:
         return KafkaRequest.model_validate(data)
     
     @staticmethod
-    def _build_delete_request(select_exp: exp.Select) -> KafkaRequest:
-        data = {}
-        data["delete"] = {}
+    def _build_delete_request(drop_exp: exp.Drop) -> KafkaRequest:
+        data = {"delete": {}}
 
-        topics_str = extract_main_table(select_exp, quoted=False)
+        if drop_exp.kind.upper() != "TABLE":
+            raise SQLParseError(f"Invalid DROP statement. Must be 'DROP TABLE'. Found 'DROP {drop_exp.kind}'.")
+
+        topics_str = extract_main_table(drop_exp, dialect=Kafka, quoted=False)
         topics = [tp.strip() for tp in topics_str.split(',')]
         data["delete"]["topics"] = topics
         return KafkaRequest.model_validate(data)
