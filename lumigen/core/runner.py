@@ -15,7 +15,7 @@ from core.adapters import validate_connections
 from core.execution import transform_data, write_data
 from core.job_context import JobContext, JobContextBuilder
 from core.dialect import transform_value
-from utils.parsing import parse_into_select_exp
+from utils.sql import parse_into_select_exp
 from utils.errors import ConfigError
 
 logger = logging.getLogger(__name__)

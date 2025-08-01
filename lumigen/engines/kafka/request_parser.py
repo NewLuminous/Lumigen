@@ -4,7 +4,7 @@ import json
 from pydantic import BaseModel, ValidationError, model_validator
 from sqlglot import exp
 from sqlglot import parse as sqlglot_parse
-from utils.parsing import extract_main_table
+from utils.sql import extract_main_table
 from engines.kafka.dialect import Kafka
 
 # ===================================================================

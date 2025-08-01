@@ -1,9 +1,10 @@
 import re
 import typing as t
 from sqlglot import exp
-from sqlglot.dialects.dialect import Dialect
+from sqlglot.dialects.dialect import Dialect, NormalizationStrategy
 from sqlglot.errors import ParseError
 from sqlglot.parser import Parser
+from sqlglot.generator import Generator
 from sqlglot.tokens import Tokenizer, TokenType
 
 # A regex to validate Kafka topic names as per the rules.
@@ -11,14 +12,8 @@ from sqlglot.tokens import Tokenizer, TokenType
 TOPIC_NAME_REGEX = re.compile(r"^[a-zA-Z0-9._-]{1,249}$")
 
 ALLOWED_KAFKA_FIELDS = {
-    "key",
-    "value",
-    "topic",
-    "partition",
-    "offset",
-    "timestamp",
-    "timestamptype",
-    "headers",
+    "key", "value", "topic", "partition", "offset",
+    "timestamp", "timestamptype", "headers",
 }
 
 
@@ -32,13 +27,11 @@ class Kafka(Dialect):
     - Projections (`SELECT` clauses) are restricted to a fixed set of Kafka message fields.
     - `CREATE TABLE` statements only allow `PARTITIONS` and `REPLICAS` properties with positive integer values.
     """
+    NORMALIZATION_STRATEGY = NormalizationStrategy.CASE_SENSITIVE
 
     class Tokenizer(Tokenizer):
         IDENTIFIERS = ['"']
-        
-        SINGLE_TOKENS = {
-            **Tokenizer.SINGLE_TOKENS,
-        }
+        SINGLE_TOKENS = {**Tokenizer.SINGLE_TOKENS}
         SINGLE_TOKENS.pop("-")
 
         KEYWORDS = {
@@ -48,7 +41,6 @@ class Kafka(Dialect):
         }
 
     class Parser(Parser):
-        
         def _validate_topic_name(self, name: str) -> None:
             """Validates a single topic name against Kafka's naming rules."""
             if not TOPIC_NAME_REGEX.match(name):
@@ -160,3 +152,32 @@ class Kafka(Dialect):
                         )
             
             return create_expr
+        
+    class Generator(Generator):
+        RESERVED_KEYWORDS = set()
+
+        def identifier_sql(self, expression: exp.Identifier) -> str:
+            """
+            Custom identifier generation for the Kafka dialect.
+            """
+            name = expression.name
+            
+            # The name MUST be quoted if:
+            # 1. The original SQL had it quoted.
+            # 2. The generator is configured to quote everything (`identify=True`).
+            # 3. It's a reserved keyword for our dialect.
+            # 4. It does NOT match our valid unquoted topic name regex.
+            
+            should_quote = (
+                expression.quoted
+                or (self.identify is True or self.identify == 'always')
+                or (self.identify == 'safe' and self.dialect.case_sensitive(name))
+                or name.upper() in self.RESERVED_KEYWORDS
+                or not TOPIC_NAME_REGEX.match(name)
+            )
+
+            if should_quote:
+                escaped_name = name.replace(self._identifier_end, self._escaped_identifier_end)
+                return f"{self._identifier_start}{escaped_name}{self._identifier_end}"
+            
+            return name

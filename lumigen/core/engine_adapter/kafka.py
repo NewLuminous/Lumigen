@@ -7,7 +7,7 @@ import logging
 import json
 import contextlib
 from collections import defaultdict
-from sqlglot import exp
+from sqlglot import exp, Dialect
 from sqlmesh.core.engine_adapter.shared import (
     DataObject,
     DataObjectType,
@@ -27,7 +27,7 @@ from core.engine_adapter.mixins import EngineAdapterMixin, FetchStreamMixin, Que
 from engines.kafka.kafka_client import MESSAGE_SCHEMA
 from utils import FallbackSet
 from utils.errors import EngineAdapterError, MissingColumnError, UnsupportedDataFrameError
-from utils.parsing import extract_main_table
+from utils.sql import extract_main_table
 
 logger = logging.getLogger(__name__)
 
@@ -191,32 +191,28 @@ class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin, QueryBuilderMixin
         topic_names = cursor.filter_topics(topic_list)
         return len(topic_names) > 0
     
+    def get_qualified_table_name(self,
+                                 table_name: t.Union[str, exp.Identifier],
+                                 schema_name: t.Optional[t.Union[str, exp.Identifier]]=None,
+                                 catalog: t.Optional[t.Union[str, exp.Identifier]]=None) -> str:
+        # Create unquoted identifiers by default and trust our custom Generator to handle quoting.
+        return super().get_qualified_table_name(
+            exp.Identifier(this=table_name) if table_name else None,
+            exp.Identifier(this=schema_name) if schema_name else None,
+            exp.Identifier(this=catalog) if catalog else None,
+        )
+    
     def get_all_data_objects(self, keyword: str="") -> t.List[DataObject]:
         keyword = keyword.strip()
         cursor: KafkaClientCursor = self.cursor
         data_objects = []
         for topic in cursor.topics:
-            if '.' in topic:
-                schema: str = topic.split('.')[0]
-                table: str = '.'.join(topic.split('.')[1:])
-            else:
-                schema = ''
-                table = topic
-
-            if '.' in keyword:
-                schema_pattern = keyword.split('.')[0].lower()
-                table_pattern = '.'.join(keyword.split('.')[1:]).lower()
-                if schema_pattern and not schema.lower().endswith(schema_pattern):
-                    continue
-                if table_pattern and not table.lower().startswith(table_pattern):
-                    continue
-            else:
-                if keyword and not keyword.lower() in table.lower():
-                    continue
+            if keyword and not keyword.lower() in topic.lower():
+                continue
 
             data_objects.append(DataObject(
-                schema=schema,
-                name=table,
+                schema="",
+                name=topic,
                 type=DataObjectType.TABLE,
             ))
         return data_objects

@@ -3,8 +3,7 @@ from __future__ import annotations
 import logging
 import typing as t
 from abc import ABC, abstractmethod
-import re
-from sqlglot import exp
+from sqlglot import exp, Dialect
 from sqlmesh.core.engine_adapter.base import EngineAdapter
 from sqlmesh.core.engine_adapter.shared import DataObject
 
@@ -100,36 +99,22 @@ class FetchStreamMixin(FetchBatchMixin):
         return
     
 class EngineAdapterMixin(EngineAdapter):
-    def get_qualified_table_name(self, table_name: str, schema_name: t.Optional[str]=None) -> str:
-        def _general_quoting_check(identifier: str) -> bool:
-            if not identifier:
-                return False
-            if any(char.isspace() for char in identifier):
-                return True
-            UNQUOTED_IDENTIFIER_REGEX = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-            if not UNQUOTED_IDENTIFIER_REGEX.fullmatch(identifier):
-                return True
-            return False
+    def get_qualified_table_name(self,
+                                 table_name: t.Union[str, exp.Identifier],
+                                 schema_name: t.Optional[t.Union[str, exp.Identifier]]=None,
+                                 catalog: t.Optional[t.Union[str, exp.Identifier]]=None) -> str:
+        if not table_name:
+            raise ValueError("table_name cannot be empty.")
         
-        try:
-            table_identifier = exp.Identifier(this=table_name)
-            schema_identifier = exp.Identifier(this=schema_name) if schema_name else None
-            qualified_table = exp.Table(this=table_identifier, db=schema_identifier)
-            if _general_quoting_check(table_name):
-                table_name = qualified_table.sql(dialect=self.dialect, identify='safe').split('.')[-1]
-            else:
-                table_name = qualified_table.sql(dialect=self.dialect, identify=False).split('.')[-1]
-        except Exception as e:
-            return f"{schema_name}.{table_name}" if schema_name else table_name
-        
-        try:
-            if schema_name:
-                if _general_quoting_check(schema_name):
-                    schema_name = qualified_table.sql(dialect=self.dialect, identify='safe').split('.')[0]
-                else:
-                    schema_name = qualified_table.sql(dialect=self.dialect, identify=False).split('.')[0]
-        finally:
-            return f"{schema_name}.{table_name}" if schema_name else table_name
+        table_exp = exp.Table(
+            this=exp.to_identifier(table_name),
+            db=exp.to_identifier(schema_name) if schema_name else None,
+            catalog=exp.to_identifier(catalog) if catalog else None,
+        )
+        if Dialect.get(self.dialect):
+            return table_exp.sql(dialect=self.dialect)
+        else:
+            return table_exp.sql()
 
     def get_all_data_objects(self, keyword: str="") -> t.List[DataObject]:
         raise NotImplementedError()

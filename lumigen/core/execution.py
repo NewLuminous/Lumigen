@@ -12,7 +12,7 @@ if t.TYPE_CHECKING:
 
 from utils import merge_dicts, FallbackSet
 from utils.dataset import columns_to_types_from_df, get_columns_name, is_batch_or_stream_empty
-from utils.parsing import dialect_insensitive_tbl_name
+from utils.sql import dialect_insensitive_tbl_name
 from core.config.job import TransformationConfig, DataSaveMode, DataLoadMode, JobMode
 from core.pipeline.watermark_tracker import WatermarkTracker
 from transformers import transformer_factory, TransformationPipeline

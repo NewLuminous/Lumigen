@@ -6,7 +6,7 @@ from enum import Enum
 from sqlglot import exp
 from sqlmesh.core.config.base import BaseConfig
 
-from utils.parsing import dialect_insensitive_tbl_name, extract_main_table
+from utils.sql import dialect_insensitive_tbl_name, extract_main_table
 from utils.errors import ConfigError
 
 logger = logging.getLogger(__name__)
