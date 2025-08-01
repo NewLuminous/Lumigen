@@ -26,6 +26,7 @@ class JobPreviewerBase(ABC):
         """
         config.job_properties["source_limit"] = 10000
         config.job_properties["source_batch_size"] = sample_size
+        config.audit_store = None
         config.executor = None # Python by default for faster response
         config.sink = None
         try:
@@ -58,6 +59,7 @@ class JobPreviewerBase(ABC):
         """
         config.job_properties["source_limit"] = 1
         config.job_properties["source_batch_size"] = 1
+        config.audit_store = None
         config.executor = None # Python by default for faster response
         try:
             context_manager = SQLContextManager.get_instance()

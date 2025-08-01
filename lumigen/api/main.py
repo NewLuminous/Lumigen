@@ -29,7 +29,7 @@ async def lifespan(app: FastAPI):
         spark_conf = SparkConf(loadDefaults=False)
         spark_conf.setMaster("local[*]")
         spark_conf.set("spark.eventLog.enabled", False)
-        context_manager.get_spark_session(app_name="Job runner API", conf=spark_conf, hive_support=False)
+        context_manager.get_spark_session(app_name="Job runner API", conf=spark_conf, hive_support=False, log_level="WARN")
 
     spark_init_thread = threading.Thread(target=initialize_spark_in_background, daemon=True)
     spark_init_thread.start()
