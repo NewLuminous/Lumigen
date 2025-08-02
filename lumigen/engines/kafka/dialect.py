@@ -22,6 +22,7 @@ class Kafka(Dialect):
     The Kafka custom dialect for SQLGlot.
 
     This dialect treats Kafka topics as tables and enforces Kafka-specific rules:
+    - `TOPIC` and `TABLE` are interchangeable keywords for DDL statements.
     - Unquoted identifiers must follow Kafka topic naming conventions (alphanumeric, '.', '_', '-').
     - Quoted identifiers can represent a comma-separated list of topics.
     - Projections (`SELECT` clauses) are restricted to a fixed set of Kafka message fields.
@@ -36,6 +37,7 @@ class Kafka(Dialect):
 
         KEYWORDS = {
             **Tokenizer.KEYWORDS,
+            "TOPIC": TokenType.TABLE,
             "PARTITIONS": TokenType.VAR,
             "REPLICAS": TokenType.VAR,
         }

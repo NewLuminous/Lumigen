@@ -3,6 +3,16 @@ import sys
 import typing as t
 
 
+LOG_LEVEL_MAP: t.Dict[str, int] = {
+    'CRITICAL': logging.CRITICAL,
+    'ERROR': logging.ERROR,
+    'WARNING': logging.WARNING,
+    'WARN': logging.WARNING,
+    'INFO': logging.INFO,
+    'DEBUG': logging.DEBUG,
+    'NOTSET': logging.NOTSET,
+}
+
 class ExitCapableLogger(logging.getLoggerClass()):
     """
     A custom logger class that adds the ability to exit the program on critical errors.

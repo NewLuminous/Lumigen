@@ -6,7 +6,7 @@ import uuid
 import tempfile
 import shutil
 import logging
-from confluent_kafka.admin import AdminClient, NewTopic, KafkaException
+from confluent_kafka.admin import AdminClient, NewTopic, KafkaException, TopicPartition, OFFSET_END
 
 if t.TYPE_CHECKING:
     from pyspark.sql import DataFrame, SparkSession
@@ -79,6 +79,10 @@ class SparkKafkaCursor(SparkSessionCursor):
             )
         elif parsed_request.delete:
             self._delete_topics(topics=parsed_request.delete.topics)
+        elif parsed_request.clear:
+            self._clear_topics(topics=parsed_request.clear.topics)
+        else:
+            raise NotImplementedError()
 
     def _create_topic(self, topic: str, num_partitions: t.Optional[int]=1, replication_factor: t.Optional[int]=1, timeout: float=10.0):
         new_topic = NewTopic(topic, num_partitions, replication_factor)
@@ -187,6 +191,24 @@ class SparkKafkaCursor(SparkSessionCursor):
                     logger.info(f"Topic '{topic}' successfully deleted.")
                 except Exception as e:
                     logger.error(f"Failed to delete topic '{topic}'.")
+                    raise e
+                
+    def _clear_topics(self, topics: t.List[str], timeout: float=30.0):
+        topics_to_clear = self.filter_topics(topics)
+        if len(topics_to_clear) > 0:
+            topic_partitions_to_clear = []
+            for topic_name, topic_metadata in topics_to_clear.items():
+                topic_partitions_to_clear.extend(
+                    TopicPartition(topic=topic_name, partition=partition_id, offset=OFFSET_END)
+                    for partition_id in topic_metadata.partitions
+                )
+            response = self._admin.delete_records(topic_partitions_to_clear, operation_timeout=timeout)
+            for topic_partition, future in response.items():
+                try:
+                    future.result()  # Block until the operation is complete
+                    logger.info(f"Messages of topic '{topic_partition.topic}' partition {topic_partition.partition} successfully cleared.")
+                except Exception as e:
+                    logger.error(f"Failed to clear messages of topic '{topic_partition.topic}' partition {topic_partition.partition}.")
                     raise e
 
     @property

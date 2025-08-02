@@ -5,7 +5,11 @@ import argparse
 import sys
 
 from config.environment import settings
-from config.logging import setup_logger, ExitCapableLogger
+from config.logging import LOG_LEVEL_MAP, setup_logger
+setup_logger(LOG_LEVEL_MAP.get(settings.LOG_LEVEL.upper(), logging.INFO))
+logger = logging.getLogger(__name__)
+
+from config.environment import settings
 from core.config.loader import load_config
 from core.engine_context import SQLContextManager
 from core.runner import JobRunner, get_runner
@@ -13,7 +17,7 @@ from utils.processes import submit_job
 from runners.spark_runner import SparkJobRunner
 
 
-def run_spark_job(runner: JobRunner, config_path: str, logger: ExitCapableLogger) -> int | None:
+def run_spark_job(runner: JobRunner, config_path: str) -> int | None:
     """Constructs and runs the spark-submit command."""
     if not settings.SPARK_HOME or not os.path.exists(settings.SPARK_HOME):
         logger.critical(f"Could not find valid SPARK_HOME: '{settings.SPARK_HOME}'", exit_on_call=True)
@@ -43,9 +47,6 @@ def run_spark_job(runner: JobRunner, config_path: str, logger: ExitCapableLogger
     return submit_job(spark_submit_cmd)
 
 def main():
-    setup_logger()
-    logger = logging.getLogger(__name__)
-
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument("-c", "--config", type=str, required=False, default="", help="Config file")
 
@@ -74,7 +75,7 @@ def main():
             # Check the type of the runner to decide how to execute it
             if isinstance(runner, SparkJobRunner):
                 # Spark jobs should be submitted as a separate process with the --spark-driver flag.
-                rc = run_spark_job(runner, args.config, logger)
+                rc = run_spark_job(runner, args.config)
                 exit_code = rc if rc is not None else 1
             else:
                 # Other runners (Python, etc.) can run in the current process

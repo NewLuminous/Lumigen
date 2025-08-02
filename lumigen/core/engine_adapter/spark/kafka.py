@@ -39,7 +39,7 @@ class SparkKafkaEngineAdapter(SparkEngineAdapter, KafkaEngineAdapter):
         if not topic_list:
             raise ValueError("No topic provided for 'replace_query' operation.")
 
-        self.execute(json.dumps({"delete": {"topics": topic_list}}))
+        self.execute(json.dumps({"clear": {"topics": topic_list}}))
         self.insert_append(topics, df, **kwargs)
             
     def insert_append(

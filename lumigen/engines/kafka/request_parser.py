@@ -49,6 +49,10 @@ class KafkaDeleteOperation(BaseModel):
     """Defines the parameters for a Kafka 'delete' operation."""
     topics: t.List[str]
 
+class KafkaClearOperation(BaseModel):
+    """Defines the parameters for a Kafka 'clear' operation."""
+    topics: t.List[str]
+
 class KafkaRequest(BaseModel):
     """
     Represents a single, validated Kafka request.
@@ -58,6 +62,7 @@ class KafkaRequest(BaseModel):
     consume: t.Optional[KafkaConsumeOperation] = None
     produce: t.Optional[KafkaProduceOperation] = None
     delete: t.Optional[KafkaDeleteOperation] = None
+    clear: t.Optional[KafkaClearOperation] = None
 
     @model_validator(mode='after')
     def check_mutual_exclusion(self) -> "KafkaRequest":
@@ -145,6 +150,8 @@ class KafkaSQLParser:
                 return KafkaSQLParser._build_produce_request(parsed_exp)
             elif isinstance(parsed_exp, exp.Drop):
                 return KafkaSQLParser._build_delete_request(parsed_exp)
+            elif isinstance(parsed_exp, exp.TruncateTable):
+                return KafkaSQLParser._build_clear_request(parsed_exp)
         except Exception as e:
             raise SQLParseError(str(e))
 
@@ -154,7 +161,7 @@ class KafkaSQLParser:
     def _build_create_request(create_exp: exp.Create) -> KafkaRequest:
         data = {"create": {}}
 
-        if create_exp.kind.upper() != "TABLE":
+        if create_exp.kind.upper() not in {"TABLE", "TOPIC"}:
             raise SQLParseError(f"Invalid CREATE statement. Must be 'CREATE TABLE'. Found 'CREATE {create_exp.kind}'.")
         
         topics_str = extract_main_table(create_exp, dialect=Kafka, quoted=False)
@@ -222,10 +229,19 @@ class KafkaSQLParser:
     def _build_delete_request(drop_exp: exp.Drop) -> KafkaRequest:
         data = {"delete": {}}
 
-        if drop_exp.kind.upper() != "TABLE":
+        if drop_exp.kind.upper() not in {"TABLE", "TOPIC"}:
             raise SQLParseError(f"Invalid DROP statement. Must be 'DROP TABLE'. Found 'DROP {drop_exp.kind}'.")
 
         topics_str = extract_main_table(drop_exp, dialect=Kafka, quoted=False)
         topics = [tp.strip() for tp in topics_str.split(',')]
         data["delete"]["topics"] = topics
+        return KafkaRequest.model_validate(data)
+    
+    @staticmethod
+    def _build_clear_request(truncate_exp: exp.TruncateTable) -> KafkaRequest:
+        data = {"clear": {}}
+
+        topics_str = extract_main_table(truncate_exp, dialect=Kafka, quoted=False)
+        topics = [tp.strip() for tp in topics_str.split(',')]
+        data["clear"]["topics"] = topics
         return KafkaRequest.model_validate(data)

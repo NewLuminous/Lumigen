@@ -144,7 +144,7 @@ class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin, QueryBuilderMixin
         **kwargs: t.Any,
     ) -> None:
         topic_list = [tn.strip() for tn in topics.split(',')]
-        self.execute(json.dumps({"delete": {"topics": topic_list}}))
+        self.execute(json.dumps({"clear": {"topics": topic_list}}))
         self.insert_append(topics, df, **kwargs)
 
     def insert_append(
@@ -188,8 +188,8 @@ class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin, QueryBuilderMixin
     def table_exists(self, topics: str) -> bool:
         topic_list = [tn.strip() for tn in topics.split(',')]
         cursor: KafkaClientCursor = self.cursor
-        topic_names = cursor.filter_topics(topic_list)
-        return len(topic_names) > 0
+        topics = cursor.filter_topics(topic_list)
+        return len(topics) > 0
     
     def get_qualified_table_name(self,
                                  table_name: t.Union[str, exp.Identifier],
