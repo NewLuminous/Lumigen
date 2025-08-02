@@ -5,8 +5,8 @@ import argparse
 import sys
 
 from config.environment import settings
-from config.logging import LOG_LEVEL_MAP, setup_logger
-setup_logger(LOG_LEVEL_MAP.get(settings.LOG_LEVEL.upper(), logging.INFO))
+from config.logging import setup_logger
+setup_logger(settings.LOG_LEVEL.upper())
 logger = logging.getLogger(__name__)
 
 from config.environment import settings
