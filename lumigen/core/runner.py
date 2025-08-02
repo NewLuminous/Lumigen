@@ -51,6 +51,7 @@ class JobRunner(ABC):
     def _get_source_query(self, context: JobContext) -> t.Any:
         reader = context.source_adapter
         job_props = context.job_props_model
+        source_query = None
 
         last_watermark = None
         if job_props.data_load_mode == DataLoadMode.INCREMENTAL:
@@ -59,15 +60,14 @@ class JobRunner(ABC):
         if isinstance(reader, QueryBuilderMixin):
             # The adapter knows best how to build its query.
             logger.debug(f"Adapter {reader.__class__.__name__} implements {QueryBuilderMixin.__name__}. Delegating query construction.")
-            return reader.build_query(
+            source_query = reader.build_query(
                 path=job_props.source_path,
                 query=job_props.source_query,
                 data_load_mode=job_props.data_load_mode,
                 watermark_column=job_props.source_watermark,
                 last_watermark_value=last_watermark,
             )
-        
-        if Dialect.get(reader.dialect):
+        elif Dialect.get(reader.dialect):
             logger.debug(f"Adapter dialect '{reader.dialect}' is a known SQL dialect. Using generic expression builder.")
             base_query = context.build_source_expression()
             if job_props.data_load_mode == DataLoadMode.INCREMENTAL:
@@ -86,9 +86,13 @@ class JobRunner(ABC):
                 # Order by the watermark column for reliable batching.
                 if job_props.source_batch_size and self.requires_sequential_watermarks:
                         query = query.order_by(watermark_column.asc())
-                return query
+                source_query = query
+            else:
+                source_query = base_query
 
-            return base_query
+        if source_query:
+            logger.info(f"Source query: {source_query}")
+            return source_query
 
         error_message = (
             f"Engine Adapter '{reader.__class__.__name__}' has a non-standard dialect '{reader.dialect}' "

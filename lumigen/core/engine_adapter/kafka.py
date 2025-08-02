@@ -61,7 +61,7 @@ class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin, QueryBuilderMixin
             op_params["stored_offsets"] = last_watermark_value
         return json.dumps({
             "consume": op_params
-        })
+        }, indent=2)
 
     def fetch_batch_df(
         self,

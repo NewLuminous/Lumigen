@@ -64,18 +64,32 @@ def main():
         sys.exit(0)
 
     # --- LAUNCHER MODE (default) ---
-    logger.info("Running in Launcher mode.")
-    job_cfg = load_config(path=args.config)
-    with SQLContextManager.get_instance() as manager:
-        runner = get_runner(job_cfg)
+    exit_code = 0
+    try:
+        logger.info("Running in Launcher mode.")
+        job_cfg = load_config(path=args.config)
+        with SQLContextManager.get_instance() as manager:
+            runner = get_runner(job_cfg)
 
-        # Check the type of the runner to decide how to execute it
-        if isinstance(runner, SparkJobRunner):
-            # Spark jobs should be submitted as a separate process with the --spark-driver flag.
-            run_spark_job(runner, args.config, logger)
+            # Check the type of the runner to decide how to execute it
+            if isinstance(runner, SparkJobRunner):
+                # Spark jobs should be submitted as a separate process with the --spark-driver flag.
+                rc = run_spark_job(runner, args.config, logger)
+                exit_code = rc if rc is not None else 1
+            else:
+                # Other runners (Python, etc.) can run in the current process
+                runner.run()
+
+        if exit_code == 0:
+            logger.info("Job completed successfully.")
         else:
-            # Other runners (Python, etc.) can run in the current process
-            runner.run()
+            logger.error(f"Job failed with exit code {exit_code}.")
+    except Exception as e:
+        logger.critical("Job execution failed with an unhandled exception.", exc_info=True)
+        exit_code = 1
+    finally:
+        logger.info(f"Application shutting down with exit code {exit_code}.")
+        sys.exit(exit_code)
 
 if __name__ == '__main__':
     main()

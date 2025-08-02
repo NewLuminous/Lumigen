@@ -306,7 +306,7 @@ class AuditManager:
                     where=exp.column("job_id").eq(exp.Literal.string(job_id)),
                 )
 
-            logger.debug(f"Successfully updated state for job_id '{job_id}' with watermark '{new_watermark_value}'.")
+            logger.info(f"Successfully updated state for job_id '{job_id}' with watermark '{new_watermark_value}'.")
         except Exception:
             logger.exception(f"Failed to merge state for job_id '{job_id}'. The high watermark was not updated.")
             # It's unsafe to continue the job if state cannot be updated.
