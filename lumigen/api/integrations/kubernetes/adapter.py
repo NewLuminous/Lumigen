@@ -1,3 +1,4 @@
+from __future__ import annotations
 import typing as t
 import os
 import re
@@ -15,7 +16,10 @@ from fastapi import HTTPException
 from kubernetes import client, config, watch
 from kubernetes.client import CustomObjectsApi, V1ContainerStatus, V1Job, V1JobCondition, V1JobStatus, V1ObjectMeta, V1Pod, V1PodSpec, V1PodStatus
 from kubernetes.client.rest import ApiException
-from core.config.root import Config
+
+if t.TYPE_CHECKING:
+    from core.config.root import Config
+
 from core.config.job import JobMode
 from utils import yaml
 from api.config import settings
@@ -595,7 +599,8 @@ class KubernetesAdapter(JobManagerAdapter):
                 raise
     
     def _create_k8s_pod_template_spec(self, resource_name: str, labels: dict, config: Config, command: t.List[str],
-                                      checkpoint_dir: t.Optional[str]=None) -> client.V1PodTemplateSpec:
+                                      checkpoint_dir: t.Optional[str]=None, enable_tty: bool = False,
+                                      ) -> client.V1PodTemplateSpec:
         volume_mounts = [
             client.V1VolumeMount(name="config-volume", mount_path="/config")
         ]
@@ -625,6 +630,7 @@ class KubernetesAdapter(JobManagerAdapter):
             volume_mounts=volume_mounts,
             env=env_vars,
             image_pull_policy="IfNotPresent",
+            tty=enable_tty,
         )
         
         pod_labels = {"job-name": resource_name}
@@ -641,7 +647,7 @@ class KubernetesAdapter(JobManagerAdapter):
         config_path_in_pod = "/config/config.yaml" 
         command = self._build_command(config, config_path_in_pod, is_preview=is_preview)
 
-        pod_template = self._create_k8s_pod_template_spec(resource_name, labels, config, command, checkpoint_dir)
+        pod_template = self._create_k8s_pod_template_spec(resource_name, labels, config, command, checkpoint_dir, enable_tty=not is_preview)
         job_mode = config.job_properties.get("job_mode", JobMode.BATCH)
         
         pod_spec: V1PodSpec = pod_template.spec

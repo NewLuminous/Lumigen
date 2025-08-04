@@ -10,24 +10,26 @@ import logging
 
 if t.TYPE_CHECKING:
     from core._typing import DataFrameType
+    from core.config.root import Config
+    from core.engine_adapter.mixins import FetchBatchMixin
 
 from config.logging import setup_logger
+setup_logger(logging.INFO)
+logger = logging.getLogger(__name__)
+
 from core.config.loader import load_config
-from core.config.root import Config
 from core.config.connection import parse_connection_config
 from core.engine_context import SQLContextManager
 from core.engine_adapter import SparkEngineAdapter
-from core.engine_adapter.mixins import FetchBatchMixin, QueryBuilderMixin
+from core.engine_adapter.mixins import QueryBuilderMixin
 from core.adapters import validate_connections
 from core.execution import transform_data
 from core.job_context import JobContext, JobContextBuilder
 import transformers
-from utils import FallbackKeyDict
+from utils import FallbackSet
 from utils.json import DisplayableJSONEncoder
 from utils.dataset import DataFrameConverter, columns_to_types_from_df
-from utils.parsing import dialect_insensitive_tbl_name
-
-logger = logging.getLogger(__name__)
+from utils.sql import dialect_insensitive_tbl_name
 
 
 DATA_START_DELIMITER = "=== JSON_DATA_START ==="
@@ -103,16 +105,17 @@ class PreviewRunner:
     def _read_data(self, context: JobContext) -> t.Iterator[DataFrameType]:
         """Reads a single batch of data from the source, respecting the preview limit."""
         reader = context.source_adapter
+        job_props = context.job_props_model
+        limit = job_props.source_limit
         query = self._get_source_query(context)
-        limit = context.job_props.get("source_limit")
 
         if isinstance(reader, SparkEngineAdapter):
             yield reader.fetch_pyspark_df(query)
         else:
-            limit = context.job_props.get("source_limit") or context.job_props.get("source_batch_size")
+            limit = job_props.source_limit or job_props.source_batch_size
             if limit:
                 try:
-                    reader: FetchBatchMixin = reader
+                    reader = t.cast("FetchBatchMixin", reader)
                     yield next(reader.fetch_batch_df(query, limit))
                     return
                 except AttributeError:
@@ -138,9 +141,9 @@ class PreviewRunner:
         """Final pipeline step: samples data and prints it as JSON."""
         num_rows_to_fetch = context.job_props.get("source_batch_size") or 20
         if isinstance(df, pyspark_sql.DataFrame):
-            df_sample = df.limit(num_rows_to_fetch)
+            df = df.limit(num_rows_to_fetch)
         else:
-            df_sample = df.head(num_rows_to_fetch)
+            df = df.head(num_rows_to_fetch)
 
         schema_fields = [
             SchemaField(name=col_name, type=col_dtype.sql()).model_dump()
@@ -149,10 +152,10 @@ class PreviewRunner:
 
         """
             Alternative:
-            json_rows_list = df_sample.toJSON(use_unicode=True).collect()
+            json_rows_list = df.toJSON(use_unicode=True).collect()
             rows_as_dicts = [json.loads(row_str) for row_str in json_rows_list]
         """
-        rows_as_dicts = DataFrameConverter.to_records(df_sample)
+        rows_as_dicts = DataFrameConverter.to_records(df)
 
         payload = {
             "schema": schema_fields,
@@ -174,12 +177,10 @@ class PreviewRunner:
             destination_columns = {}
 
         column_mappings, unmapped_source_columns, unmapped_destination_columns = [], [], []
-        col_map = FallbackKeyDict()
-        for c in destination_columns:
-            col_map[c] = c
+        dest_col_set = FallbackSet(destination_columns)
         mapped_destination_columns = set()
         for df_col_name, df_col_dtype in source_columns.items():
-            tbl_col_name = col_map[df_col_name]
+            tbl_col_name = dest_col_set.get(df_col_name)
             if tbl_col_name in destination_columns:
                 tbl_col_dtype = destination_columns[tbl_col_name]
                 is_type_compatible = writer.SCHEMA_DIFFER._is_compatible_type(df_col_dtype, tbl_col_dtype)
@@ -210,8 +211,6 @@ class PreviewRunner:
         callback(json.dumps(payload))
 
 if __name__ == '__main__':
-    setup_logger()
-
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument("-c", "--config", type=str, required=False, default="", help="Config file")
     args = arg_parser.parse_args()

@@ -1,9 +1,15 @@
+from __future__ import annotations
+import typing as t
 import logging
 import json
 import traceback
 from abc import ABC, abstractmethod
 from sqlglot import exp
-from core.config.root import Config
+
+if t.TYPE_CHECKING:
+    from core.config.root import Config
+    from core.config.connection import SparkConnectionConfig
+
 from core.config.connection import parse_connection_config
 from core.engine_context import SQLContextManager, SparkStatus
 import transformers
@@ -24,6 +30,9 @@ class JobPreviewerBase(ABC):
         """
         Generates a preview of the data a job would produce.
         """
+        executor: SparkConnectionConfig = config.executor
+        executor.log_level = "ERROR" # Reduce log noise for previews
+
         config.job_properties["source_limit"] = 10000
         config.job_properties["source_batch_size"] = sample_size
         config.audit_store = None
@@ -57,6 +66,9 @@ class JobPreviewerBase(ABC):
         Generates a preview of the column mapping between the job's
         transformed output and the target sink.
         """
+        executor: SparkConnectionConfig = config.executor
+        executor.log_level = "ERROR"
+
         config.job_properties["source_limit"] = 1
         config.job_properties["source_batch_size"] = 1
         config.audit_store = None

@@ -4,14 +4,15 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from config.logging import setup_logger
+
 from api.config import settings
-from api.endpoints import v1
-
-
-setup_logger(level=settings.LOG_LEVEL)
+from config.logging import setup_logger
+setup_logger(level=settings.LOG_LEVEL.upper())
 logger = logging.getLogger(__name__)
 middleware_logger = logging.getLogger("api.middleware")
+
+from api.endpoints import v1
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

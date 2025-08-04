@@ -1,9 +1,9 @@
+from __future__ import annotations
 import typing as t
 import os
 import re
 import time
 import logging
-import traceback
 import asyncio
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -12,24 +12,23 @@ from pathlib import Path
 from dateutil import parser
 import tempfile
 import json
-from sqlglot import exp
 import docker
 from docker.errors import ContainerError
-from core.config.root import Config
-from core.config.connection import parse_connection_config
+
+if t.TYPE_CHECKING:
+    from core.config.root import Config
+
 from core.config.job import JobMode
-from core.engine_context import SQLContextManager, SparkStatus
-import transformers
 from utils import yaml
 from utils.formatting import format_seconds_timestamp
 from api.config import settings
 from api.enums import JobStatus
-from api.schemas import JobStatusResponse, JobInfoResponse, JobMetricsResponse, DataFetchResponse, JobPreviewResponse, JobColumnMapping
+from api.schemas import JobStatusResponse, JobInfoResponse, JobMetricsResponse, DataFetchResponse
 from api.integrations.base_adapter import JobManagerAdapter
 from api.integrations.parser import PySparkLogParser
 from api.integrations.docker.enums import ContainerStatus
 from api.integrations.docker.schemas import ContainerInfo
-from api.tools.preview_worker import PreviewRunner, DATA_START_DELIMITER, DATA_END_DELIMITER
+from api.tools.preview_worker import DATA_START_DELIMITER, DATA_END_DELIMITER
 
 
 logger = logging.getLogger(__name__)
@@ -146,6 +145,7 @@ class DockerAdapter(JobManagerAdapter):
                     name=container_name,
                     image=settings.JOB_IMAGE_NAME,
                     command=command,
+                    tty=True,           # To unbuffer logging
                 )
                 self.job_dict[id].object = container
                 self.job_dict[id].name = container_name

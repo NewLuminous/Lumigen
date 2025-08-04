@@ -61,6 +61,7 @@ class Settings(BaseSettings):
                                         description="Maximum number of job history to keep for each job name.")
     
     # Spark settings
+    SPARK_LOG_LEVEL: str = "WARN"
     SPARK_MASTER: str = Field(
         default="local[*]",
         description="The --master argument for spark-submit. Examples: 'local[*]', 'yarn', or 'k8s://<api_server>'."

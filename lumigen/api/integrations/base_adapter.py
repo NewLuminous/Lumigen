@@ -2,10 +2,14 @@ from __future__ import annotations
 import typing as t
 from abc import ABC, abstractmethod
 import logging
-from core.config.root import Config
+
+if t.TYPE_CHECKING:
+    from core.config.root import Config
+    from core.config.connection import SparkConnectionConfig
+    from api.enums import JobStatus
+    from api.schemas import JobStatusResponse, JobInfoResponse, JobMetricsResponse
+
 from api.config import settings
-from api.enums import JobStatus
-from api.schemas import JobStatusResponse, JobInfoResponse, JobMetricsResponse
 from api.services.job_previewer import JobPreviewerBase
 
 logger = logging.getLogger(__name__)
@@ -58,6 +62,9 @@ class JobManagerAdapter(JobPreviewerBase, ABC):
 
     def _prepare_config_for_submission(self, config: Config) -> Config:
         if config.get_executor().type_ == "spark":
+            executor: SparkConnectionConfig = config.executor
+            executor.log_level = settings.SPARK_LOG_LEVEL
+
             options: dict = config.job_properties.setdefault("spark_submit_options", {})
             options.setdefault("master", settings.SPARK_MASTER)
 

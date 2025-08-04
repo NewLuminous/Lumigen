@@ -1,3 +1,4 @@
+from __future__ import annotations
 import typing as t
 from fastapi import APIRouter, Depends, HTTPException
 import asyncio
@@ -9,8 +10,8 @@ from sqlmesh.utils.errors import SQLMeshError
 if t.TYPE_CHECKING:
     from core.engine_adapter.mixins import EngineAdapterMixin
 
-from utils import FallbackKeyDict
-from utils.parsing import dialect_insensitive_tbl_name
+from utils import FallbackSet
+from utils.sql import dialect_insensitive_tbl_name
 from api.enums import DataObjectType
 from api.schemas import parse_connection, SchemaField, SchemaMappingRequest, ConnectionColumnMapping
 from api.dependencies import get_custom_executor
@@ -52,7 +53,7 @@ async def list_data_objects(conn_config: t.Dict[str, t.Any],
             "catalog": obj.catalog,
             "schema": obj.schema_name,
             "name": obj.name,
-            "qualified_name": engine_adapter.get_qualified_table_name(obj.name, obj.schema_name),
+            "qualified_name": engine_adapter.get_qualified_table_name(obj.name, obj.schema_name, obj.catalog),
             "type": obj.type,
         })
     tbl_or_views.sort(key=lambda item: (item["schema"], item["name"]))
@@ -144,12 +145,10 @@ async def schema_mapping(schemas: SchemaMappingRequest):
     column_mappings = []
     unmapped_source_columns = []
     unmapped_destination_columns = []
-    col_map = FallbackKeyDict()
-    for c in destination_columns:
-        col_map[c] = c
+    dest_col_set = FallbackSet(destination_columns)
     mapped_destination_columns = set()
     for s_col_name, s_col_dtype in source_columns.items():
-        d_col_name = col_map[s_col_name]
+        d_col_name = dest_col_set.get(s_col_name)
         if d_col_name in destination_columns:
             d_col_dtype = destination_columns[d_col_name]
             is_type_compatible = _is_compatible_type(s_col_dtype, d_col_dtype)
