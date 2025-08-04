@@ -6,7 +6,8 @@ import uuid
 import tempfile
 import shutil
 import logging
-from confluent_kafka.admin import AdminClient, NewTopic, KafkaException, TopicPartition, OFFSET_END
+from confluent_kafka import KafkaException, TopicPartition, OFFSET_END
+from confluent_kafka.admin import AdminClient, NewTopic
 
 if t.TYPE_CHECKING:
     from pyspark.sql import DataFrame, SparkSession
