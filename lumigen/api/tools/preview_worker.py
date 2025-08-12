@@ -116,8 +116,9 @@ class PreviewRunner:
             if limit:
                 try:
                     reader = t.cast("FetchBatchMixin", reader)
-                    yield next(reader.fetch_batch_df(query, limit))
-                    return
+                    for df in reader.fetch_batch_df(query, limit):
+                        yield df
+                        return
                 except AttributeError:
                     logger.error(NotImplementedError(f"Batch fetching is not supported by {reader.__class__.__name__}."))
 
