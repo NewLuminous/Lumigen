@@ -328,10 +328,14 @@ class KafkaClientCursor:
     
     def _get_partitions(self, topic: str) -> t.Dict[int, t.Any]:
         return self.topics[topic].partitions
-    
-    def _get_last_offset(self, topic: str, partition: int) -> int:
+
+    def _get_watermark_offsets(self, topic: str, partition: int) -> t.Tuple[int, int]:
         topic_partition = TopicPartition(topic=topic, partition=partition)
         low, high = self.consumer.get_watermark_offsets(topic_partition, timeout=10.0)
+        return low, high
+    
+    def _get_last_offset(self, topic: str, partition: int) -> int:
+        low, high = self._get_watermark_offsets(topic, partition)
         return high - 1
     
     def _get_last_offsets(self, topic: str) -> t.Dict[int, int]:
@@ -360,8 +364,9 @@ class KafkaClientCursor:
     def _consumed_all(self) -> bool:
         for topic in self._assignments:
             for partition in self._assignments[topic]:
-                consumed_offset = self._last_consumed_offsets[topic].get(partition, -1)
-                last_offset = self._get_last_offset(topic, partition)
+                low_offset, high_offset = self._get_watermark_offsets(topic, partition)
+                consumed_offset = self._last_consumed_offsets[topic].get(partition, low_offset - 1)
+                last_offset = high_offset - 1
                 if consumed_offset < last_offset:
                     return False
         return True

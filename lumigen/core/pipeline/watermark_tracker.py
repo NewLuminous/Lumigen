@@ -86,7 +86,11 @@ class WatermarkTracker(ForeachBatch):
                     self.high_watermark_max = high_watermark_max_in_batch
 
                 # Step 3: Apply all downstream transformations (including the sink write).
-                return self._apply_callbacks(df)
+                ret = self._apply_callbacks(df)
+            
+            if high_watermark_max_in_batch is not None:
+                logger.info(f"Successfully updated state for job_id '{self.job_props.job_id}' with watermark '{high_watermark_max_in_batch}'.")
+            return ret
         finally:
             if is_spark:
                 df.unpersist()

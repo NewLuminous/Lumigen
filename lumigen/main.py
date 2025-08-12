@@ -1,8 +1,10 @@
 from __future__ import annotations
+import typing as t
 import logging
 import os
 import argparse
 import sys
+from sqlglot.helper import ensure_list
 
 from config.environment import settings
 from config.logging import setup_logger
@@ -27,16 +29,18 @@ def run_spark_job(runner: JobRunner, config_path: str) -> int | None:
         logger.critical(f"Could not find valid SPARK_EXECUTABLE={settings.SPARK_EXECUTABLE} in $SPARK_HOME/bin/", exit_on_call=True)
         return 1
 
-    spark_submit_options = []
-    for k, v in runner.config.job_properties.get("spark_submit_options", {}).items():
-        spark_submit_options.append(f"--{k}")
-        spark_submit_options.append(str(v))
+    spark_args = []
+    spark_submit_options: t.Dict[str, t.Any] = runner.config.job_properties.get("spark_submit_options", {})
+    for k, v in spark_submit_options.items():
+        for item in ensure_list(v):
+            spark_args.append(f"--{k}")
+            spark_args.append(str(item))
 
     main_script_path = os.path.abspath(__file__)
 
     spark_submit_cmd = [
         os.path.join(settings.SPARK_HOME, "bin", settings.SPARK_EXECUTABLE),
-        *spark_submit_options,
+        *spark_args,
         main_script_path,
         "--spark-driver",
     ]

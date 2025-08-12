@@ -11,6 +11,7 @@ from utils.errors import ConfigError
 
 logger = logging.getLogger(__name__)
 StringOrInt = t.Union[str, int]
+CliOptionValue = t.Union[StringOrInt, t.List[StringOrInt]]
 
 
 class JobMode(str, Enum):
@@ -228,7 +229,7 @@ class JobPropertiesModel(
     """A unique, stable, and human-readable identifier for this job."""
     job_mode: t.Optional[JobMode] = JobMode.BATCH
     """Whether the task is in BATCH or STREAMING mode."""
-    spark_submit_options: t.Optional[t.Dict[str, StringOrInt]] = {}
+    spark_submit_options: t.Optional[t.Dict[str, CliOptionValue]] = {}
     """A dictionary of parameters when submitting a Spark application using the `spark-submit` command."""
 
     @model_validator(mode='before')
