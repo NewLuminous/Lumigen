@@ -87,12 +87,25 @@ class Config(BaseConfig):
         return v
     
     @model_validator(mode='after')
-    def _validate_incremental_requires_audit_store(self) -> "Config":
+    def _validate_incremental_requirements(self) -> "Config":
         load_mode_str = self.job_properties.get("data_load_mode", "FULL")
-        if DataLoadMode(load_mode_str) == DataLoadMode.INCREMENTAL and self.audit_store is None:
+        if DataLoadMode(load_mode_str) != DataLoadMode.INCREMENTAL:
+            return self
+
+        if self.audit_store is None:
             raise ValueError(
                 f"An 'audit_store' connection must be configured when `data_load_mode` is '{DataLoadMode.INCREMENTAL}'."
             )
+        
+        # Handle watermark validation and defaults.
+        if self.source.type_ == "kafka":
+            self.job_properties["source_watermark"] = "offsets"
+        else:
+            if not self.job_properties.get("source_watermark"):
+                raise ValueError(
+                    f"'source_watermark' must be configured when `data_load_mode` is '{DataLoadMode.INCREMENTAL}'."
+                )
+
         return self
     
     def get_source(self) -> t.Optional[ConnectionConfig]:
@@ -113,4 +126,4 @@ class Config(BaseConfig):
 
     @property
     def fingerprint(self) -> str:
-        return str(zlib.crc32(pickle.dumps(self.dict(exclude={}))))
+        return str(zlib.crc32(pickle.dumps(self.dict(exclude={"audit_store"}))))
