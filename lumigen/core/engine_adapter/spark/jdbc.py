@@ -4,7 +4,7 @@ import typing as t
 
 import logging
 import pyspark.sql
-from sqlglot import exp
+from sqlglot import exp, insert
 
 from sqlmesh.core.engine_adapter.shared import (
     set_catalog,
@@ -12,8 +12,9 @@ from sqlmesh.core.engine_adapter.shared import (
 
 if t.TYPE_CHECKING:
     from core._typing import TableName
+    from sqlmesh.core.engine_adapter import EngineAdapter
     from sqlmesh.core.engine_adapter.base import QueryOrDF
-    from engines.spark.spark_jdbc import SparkJDBCCursor, SparkJDBCConnection
+    from sqlmesh.utils.connection_pool import ConnectionPool
 
 from utils.dataset import DataFrameConverter
 from core.engine_adapter.spark.base import SparkEngineAdapter
@@ -24,6 +25,25 @@ logger = logging.getLogger(__name__)
 @set_catalog()
 class SparkJDBCEngineAdapter(SparkEngineAdapter):
     SUPPORTS_REPLACE_TABLE = True
+
+    def __init__(
+        self,
+        connection_factory_or_pool: t.Union[t.Callable[[], t.Any], ConnectionPool],
+        delegate_adapter: EngineAdapter,
+        **kwargs: t.Any,
+    ):
+        """
+        An adapter that uses Spark's native JDBC capabilities to read/write to databases,
+        while delegating metadata and complex operations back to a standard EngineAdapter.
+        
+        Args:
+            connection_factory_or_pool: The factory for creating Spark JDBC connections.
+            delegate_adapter: The standard EngineAdapter for the target database (e.g., PostgresEngineAdapter).
+        """
+        super(SparkJDBCEngineAdapter, self).__init__(connection_factory_or_pool, **kwargs)
+        self.delegate_adapter = delegate_adapter
+        self.dialect = delegate_adapter.dialect
+        self.SCHEMA_DIFFER = delegate_adapter.SCHEMA_DIFFER
 
     def replace_query(
         self,
@@ -44,20 +64,17 @@ class SparkJDBCEngineAdapter(SparkEngineAdapter):
             columns_to_types: Optional a mapping between the column name and its data type.
             kwargs: Optional create table properties.
         """
-        target_table = exp.to_table(table_name)
-
         if isinstance(query_or_df, (exp.Query, exp.DerivedTable, str)):
             df = self.fetch_pyspark_df(query_or_df)
         else:
             df = query_or_df
 
-        # TODO: When creating table if not exists, create CLOB columns when data length > 255
         if isinstance(df, pyspark.sql.DataFrame):
-            df.write.format("jdbc") \
-                .options(**self.cursor.jdbc_options) \
-                .option("dbtable", target_table.sql(dialect=self.dialect)) \
-                .option("truncate", kwargs.get("truncate", True)) \
-                .mode("overwrite").save()
+            insert_exp = insert(exp.select("*").from_("DUAL"),
+                                table_name,
+                                overwrite=True,
+                                dialect=self.dialect)
+            self.execute(insert_exp, df=df, **kwargs)
         else:
             raise NotImplementedError()
             
@@ -67,19 +84,16 @@ class SparkJDBCEngineAdapter(SparkEngineAdapter):
         query_or_df: QueryOrDF,
         columns_to_types: t.Optional[t.Dict[str, exp.DataType]] = None,
     ) -> None:
-        target_table = exp.to_table(table_name)
-
         if isinstance(query_or_df, (exp.Query, exp.DerivedTable, str)):
             df = self.fetch_pyspark_df(query_or_df)
         else:
             df = query_or_df
 
         if isinstance(df, pyspark.sql.DataFrame):
-            self.cursor: SparkJDBCCursor
-            df.write.format("jdbc") \
-                .options(**self.cursor.jdbc_options) \
-                .option("dbtable", target_table.sql(dialect=self.dialect)) \
-                .mode("append").save()
+            insert_exp = insert(exp.select("*").from_("DUAL"),
+                                table_name,
+                                dialect=self.dialect)
+            self.execute(insert_exp, df=df)
         else:
             raise NotImplementedError()
             
@@ -100,13 +114,12 @@ class SparkJDBCEngineAdapter(SparkEngineAdapter):
         # MERGE INTO TABLE is not supported temporarily by current version of vanilla Spark (3.3.3)
         # Delegate MERGE operation to corresponding engine adapter at the cost of collecting all the rows from PySpark DataFrame.
         df = DataFrameConverter.to_pandas(df)
-        self.connection: SparkJDBCConnection
-        self.connection.engine_adapter.merge(target_table, df, columns_to_types, unique_key, when_matched, merge_filter)
+        self.delegate_adapter.merge(target_table, df, columns_to_types, unique_key, when_matched, merge_filter)
 
     def columns(
         self, table_name: TableName, include_pseudo_columns: bool = False
     ) -> t.Dict[str, exp.DataType]:
-        return self.connection.engine_adapter.columns(table_name, include_pseudo_columns)
+        return self.delegate_adapter.columns(table_name, include_pseudo_columns)
 
     def table_exists(self, table_name: TableName) -> bool:
-        return self.connection.engine_adapter.table_exists(table_name)
+        return self.delegate_adapter.table_exists(table_name)

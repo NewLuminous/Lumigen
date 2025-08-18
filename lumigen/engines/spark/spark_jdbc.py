@@ -1,8 +1,9 @@
 from __future__ import annotations
 import typing as t
+from sqlglot import exp, parse_one
 
 if t.TYPE_CHECKING:
-    from pyspark.sql import SparkSession
+    from pyspark.sql import DataFrame, SparkSession
     from core.config.connection import ConnectionConfig
 
 from engines.spark.errors import NotSupportedError
@@ -14,8 +15,9 @@ class SparkJDBCCursor(SparkSessionCursor):
         "mssql", "mysql", "oracle", "postgres"
     }
 
-    def __init__(self, spark: SparkSession, connection_config: "ConnectionConfig"):
+    def __init__(self, spark: SparkSession, dialect: str, connection_config: "ConnectionConfig"):
         super().__init__(spark)
+        self.dialect = dialect
         self.jdbc_options = self._jdbc_options_factory(connection_config)
 
     @classmethod
@@ -44,28 +46,44 @@ class SparkJDBCCursor(SparkSessionCursor):
         }
         return jdbc_options
 
-    def execute(self, query: str, parameters: t.Optional[t.Any] = None) -> None:
-        if parameters:
-            raise NotSupportedError("Parameterized queries are not supported")
+    def execute(self, query: str, df: t.Optional[DataFrame] = None, **kwargs) -> None:
+        parsed_exp = parse_one(query, dialect=self.dialect)
+        if isinstance(parsed_exp, exp.Insert):
+            self._write(parsed_exp, df, **kwargs)
+        else:
+            self._last_df = self._spark.read.format("jdbc") \
+                .options(**self.jdbc_options) \
+                .option("query", query) \
+                .load()
+            self._last_output = None
+            self._last_output_cursor = 0
 
-        self._last_df = self._spark.read.format("jdbc") \
-            .options(**self.jdbc_options) \
-            .option("query", query) \
-            .load()
-        self._last_output = None
-        self._last_output_cursor = 0
+    def _write(self, insert_exp: exp.Insert, df: t.Optional[DataFrame] = None, **kwargs):
+        target_table = t.cast("exp.Expression", insert_exp.this).find(exp.Table).sql(dialect=self.dialect)
+        if insert_exp.args["overwrite"]:
+            # TODO: When creating table if not exists, create CLOB columns when data length > 255
+            df.write.format("jdbc") \
+                .options(**self.jdbc_options) \
+                .option("dbtable", target_table) \
+                .option("truncate", kwargs.get("truncate", True)) \
+                .mode("overwrite").save()
+        else:
+            df.write.format("jdbc") \
+                .options(**self.jdbc_options) \
+                .option("dbtable", target_table) \
+                .mode("append").save()
 
 
 class SparkJDBCConnection(SparkSessionConnection):
-    def __init__(self, spark: SparkSession, connection_config: "ConnectionConfig", catalog: t.Optional[str] = None):
+    def __init__(self, spark: SparkSession, dialect: str, connection_config: "ConnectionConfig", catalog: t.Optional[str] = None):
         super().__init__(spark, catalog)
+        self.dialect = dialect
         self.connection_config = connection_config
-        self.engine_adapter = connection_config.create_engine_adapter()
 
     def cursor(self) -> SparkJDBCCursor:
         super().cursor()
-        return SparkJDBCCursor(self.spark, self.connection_config)
+        return SparkJDBCCursor(self.spark, self.dialect, self.connection_config)
 
 
-def connection(spark: SparkSession, connection_config: "ConnectionConfig", catalog: t.Optional[str] = None) -> SparkJDBCConnection:
-    return SparkJDBCConnection(spark, connection_config, catalog)
+def connection(spark: SparkSession, dialect: str, connection_config: "ConnectionConfig", catalog: t.Optional[str] = None) -> SparkJDBCConnection:
+    return SparkJDBCConnection(spark, dialect, connection_config, catalog)

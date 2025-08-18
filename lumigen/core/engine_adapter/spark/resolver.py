@@ -35,17 +35,17 @@ class SparkAdapterResolver(AdapterResolver):
             from engines.spark.spark_jdbc import connection, SparkJDBCCursor
 
             if external_db_config.type_ in SparkJDBCCursor.SUPPORTED_SOURCES:
-                external_engine_adapter = external_db_config.create_engine_adapter()
+                # Create the standard adapter that we will delegate certain tasks to.
+                delegate_adapter = external_db_config.create_engine_adapter()
                 conn_with_kwargs = partial(
                     connection,
                     **{
                         **self.executor_config._static_connection_kwargs,
+                        "dialect": delegate_adapter.dialect,
                         "connection_config": external_db_config,
                         **{k: v for k, v in self.executor_config.dict().items() if k in self.executor_config._connection_kwargs_keys},
                     },
                 )
-                adapter = SparkJDBCEngineAdapter(conn_with_kwargs, dialect=external_engine_adapter.dialect)
-                adapter.SCHEMA_DIFFER = external_engine_adapter.SCHEMA_DIFFER
-                return adapter
+                return SparkJDBCEngineAdapter(conn_with_kwargs, delegate_adapter=delegate_adapter)
         
         return None
