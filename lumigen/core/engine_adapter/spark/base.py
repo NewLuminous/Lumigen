@@ -20,7 +20,10 @@ logger = logging.getLogger(__name__)
 
 
 @set_catalog()
-class SparkEngineAdapter(sqlmesh.core.engine_adapter.SparkEngineAdapter, EngineAdapterMixin):
+class SparkEngineAdapter(
+    EngineAdapterMixin,
+    sqlmesh.core.engine_adapter.SparkEngineAdapter,
+):
     def wap_supported(self, table_name: TableName) -> bool:
         # Disable WAP to prevent dummy inserting when _create_table
         return False

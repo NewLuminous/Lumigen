@@ -13,9 +13,9 @@ from core.engine_adapter.mixins import EngineAdapterMixin, FetchBatchMixin
 
 
 class MSSQLEngineAdapter(
-    sqlmesh.core.engine_adapter.mssql.MSSQLEngineAdapter,
-    EngineAdapterMixin,
     FetchBatchMixin,
+    EngineAdapterMixin,
+    sqlmesh.core.engine_adapter.mssql.MSSQLEngineAdapter,
 ):
     def _convert_df_datetime(self, df, columns_to_types: t.Dict[str, exp.DataType]) -> None:
         super()._convert_df_datetime(df, columns_to_types)

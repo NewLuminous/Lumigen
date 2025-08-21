@@ -12,6 +12,8 @@ import pandas as pd
 from sqlmesh.core.dialect import to_schema
 from sqlmesh.core.engine_adapter.base import EngineAdapterWithIndexSupport, MERGE_SOURCE_ALIAS, MERGE_TARGET_ALIAS
 from sqlmesh.core.engine_adapter.mixins import (
+    InsertOverwriteWithMergeMixin,
+    NonTransactionalTruncateMixin,
     PandasNativeFetchDFSupportMixin,
     RowDiffMixin,
 )
@@ -36,11 +38,13 @@ from utils.dataset import columns_to_types_from_df, DataFrameConverter
 
 @set_catalog()
 class OracleEngineAdapter(
+    InsertOverwriteWithMergeMixin,
+    NonTransactionalTruncateMixin,
+    PandasNativeFetchDFSupportMixin,
+    FetchBatchMixin,
+    RowDiffMixin,
     EngineAdapterWithIndexSupport,
     EngineAdapterMixin,
-    PandasNativeFetchDFSupportMixin,
-    RowDiffMixin,
-    FetchBatchMixin,
 ):
     DIALECT: str = "oracle"
     COMMENT_CREATION_TABLE = CommentCreationTable.COMMENT_COMMAND_ONLY
@@ -213,8 +217,7 @@ class OracleEngineAdapter(
 
         with self.transaction():
             if table_exists:
-                truncate_exp = exp.TruncateTable(expressions=[target_table])
-                self.execute(truncate_exp)
+                self._truncate_table(table_name)
             self.insert_append(target_table, query_or_df, columns_to_types=columns_to_types)
 
     def insert_append(

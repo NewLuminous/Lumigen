@@ -14,9 +14,9 @@ from core.engine_adapter.mixins import EngineAdapterMixin, FetchBatchMixin
 
 
 class PostgresEngineAdapter(
-    sqlmesh.core.engine_adapter.postgres.PostgresEngineAdapter,
-    EngineAdapterMixin,
     FetchBatchMixin,
+    EngineAdapterMixin,
+    sqlmesh.core.engine_adapter.postgres.PostgresEngineAdapter,
 ):
     def execute(
         self,

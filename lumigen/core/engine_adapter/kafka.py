@@ -32,7 +32,12 @@ from utils.sql import extract_main_table
 logger = logging.getLogger(__name__)
 
 
-class KafkaEngineAdapter(FetchStreamMixin, EngineAdapterMixin, QueryBuilderMixin, WatermarkStrategyMixin):
+class KafkaEngineAdapter(
+    WatermarkStrategyMixin,
+    QueryBuilderMixin,
+    FetchStreamMixin,
+    EngineAdapterMixin,
+):
     DIALECT: str = "kafka"
 
     def build_query(
