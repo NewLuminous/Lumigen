@@ -87,6 +87,17 @@ class Config(BaseConfig):
         return v
     
     @model_validator(mode='after')
+    def _set_source_defaults(self) -> "Config":
+        """
+        Sets default values for job properties based on the source type.
+        This runs before the requirement validation.
+        """
+        if self.source:
+            if self.source.type_ == "kafka":
+                self.job_properties["source_watermark"] = "offsets"
+        return self
+    
+    @model_validator(mode='after')
     def _validate_incremental_requirements(self) -> "Config":
         load_mode_str = self.job_properties.get("data_load_mode", "FULL")
         if DataLoadMode(load_mode_str) != DataLoadMode.INCREMENTAL:
@@ -97,14 +108,10 @@ class Config(BaseConfig):
                 f"An 'audit_store' connection must be configured when `data_load_mode` is '{DataLoadMode.INCREMENTAL}'."
             )
         
-        # Handle watermark validation and defaults.
-        if self.source.type_ == "kafka":
-            self.job_properties["source_watermark"] = "offsets"
-        else:
-            if not self.job_properties.get("source_watermark"):
-                raise ValueError(
-                    f"'source_watermark' must be configured when `data_load_mode` is '{DataLoadMode.INCREMENTAL}'."
-                )
+        if not self.job_properties.get("source_watermark"):
+            raise ValueError(
+                f"'source_watermark' must be configured when `data_load_mode` is '{DataLoadMode.INCREMENTAL}'."
+            )
 
         return self
     

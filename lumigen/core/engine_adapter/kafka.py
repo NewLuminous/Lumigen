@@ -148,8 +148,7 @@ class KafkaEngineAdapter(
         df: DataFrameType,
         **kwargs: t.Any,
     ) -> None:
-        topic_list = [tn.strip() for tn in topics.split(',')]
-        self.execute(json.dumps({"clear": {"topics": topic_list}}))
+        self._truncate_table(topics)
         self.insert_append(topics, df, **kwargs)
 
     def insert_append(
@@ -195,6 +194,10 @@ class KafkaEngineAdapter(
         cursor: KafkaClientCursor = self.cursor
         topics = cursor.filter_topics(topic_list)
         return len(topics) > 0
+    
+    def _truncate_table(self, topics: str) -> None:
+        topic_list = [tn.strip() for tn in topics.split(',')]
+        self.execute(json.dumps({"clear": {"topics": topic_list}}))
     
     def get_qualified_table_name(self,
                                  table_name: t.Union[str, exp.Identifier],

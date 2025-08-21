@@ -7,10 +7,15 @@ if t.TYPE_CHECKING:
     from core.config.connection import ConnectionConfig
 
 from engines.spark.errors import NotSupportedError
-from engines.spark.spark_session import SparkSessionCursor, SparkSessionConnection
+from engines.spark.cursors import SparkStreamToBatchCursor
+from engines.spark.spark_session import SparkSessionConnection
 
 
-class SparkJDBCCursor(SparkSessionCursor):
+class SparkJDBCCursor(SparkStreamToBatchCursor):
+    """
+    This class translates the abstract `execute` command into specific calls to
+    Spark's native DataFrame reader and writer for the JDBC format.
+    """
     SUPPORTED_SOURCES: set = {
         "mssql", "mysql", "oracle", "postgres"
     }
@@ -46,9 +51,23 @@ class SparkJDBCCursor(SparkSessionCursor):
         }
         return jdbc_options
 
-    def execute(self, query: str, df: t.Optional[DataFrame] = None, **kwargs) -> None:
+    def execute(self, query: str, df: t.Optional[DataFrame] = None, batch_id: int = 0, **kwargs) -> None:
+        """
+        Overrides the base `execute` method to provide JDBC-specific read/write logic.
+        This method is the main entry point for this cursor's functionality.
+
+        Args:
+            query: A SQL query string.
+            df: The DataFrame to write. This is None for read operations.
+            batch_id: The ID of the micro-batch, provided by `foreachBatch`.
+        """
+        # If a streaming DataFrame is passed, delegate to the base class's `foreachBatch` setup.
+        # This will then call this same `execute` method again for each micro-batch.
+        if df and df.isStreaming:
+            super().execute(query, df, batch_id=batch_id, **kwargs)
+
         parsed_exp = parse_one(query, dialect=self.dialect)
-        if isinstance(parsed_exp, exp.Insert):
+        if df and isinstance(parsed_exp, exp.Insert):
             self._write(parsed_exp, df, **kwargs)
         else:
             self._last_df = self._spark.read.format("jdbc") \
@@ -58,7 +77,7 @@ class SparkJDBCCursor(SparkSessionCursor):
             self._last_output = None
             self._last_output_cursor = 0
 
-    def _write(self, insert_exp: exp.Insert, df: t.Optional[DataFrame] = None, **kwargs):
+    def _write(self, insert_exp: exp.Insert, df: DataFrame, **kwargs):
         target_table = t.cast("exp.Expression", insert_exp.this).find(exp.Table).sql(dialect=self.dialect)
         if insert_exp.args["overwrite"]:
             # TODO: When creating table if not exists, create CLOB columns when data length > 255
