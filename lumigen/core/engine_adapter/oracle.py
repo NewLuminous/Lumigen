@@ -9,7 +9,7 @@ from sqlglot.errors import ParseError
 import numpy as np
 import pandas as pd
 
-from sqlmesh.core.dialect import to_schema
+from sqlmesh.core.dialect import add_table, to_schema
 from sqlmesh.core.engine_adapter.base import EngineAdapterWithIndexSupport, MERGE_SOURCE_ALIAS, MERGE_TARGET_ALIAS
 from sqlmesh.core.engine_adapter.mixins import (
     InsertOverwriteWithMergeMixin,
@@ -30,7 +30,7 @@ from sqlmesh.core.schema_diff import SchemaDiffer
 
 if t.TYPE_CHECKING:
     from core._typing import SchemaName, TableName
-    from sqlmesh.core.engine_adapter.base import QueryOrDF
+    from sqlmesh.core.engine_adapter.base import QueryOrDF, DF
 
 from core.engine_adapter.mixins import EngineAdapterMixin, FetchBatchMixin
 from utils.dataset import columns_to_types_from_df, DataFrameConverter
@@ -38,7 +38,6 @@ from utils.dataset import columns_to_types_from_df, DataFrameConverter
 
 @set_catalog()
 class OracleEngineAdapter(
-    InsertOverwriteWithMergeMixin,
     NonTransactionalTruncateMixin,
     PandasNativeFetchDFSupportMixin,
     FetchBatchMixin,
@@ -91,6 +90,21 @@ class OracleEngineAdapter(
             )
             for column, kind in columns_to_types.items()
         ]
+    
+    def _drop_object(
+        self,
+        name: TableName | SchemaName,
+        exists: bool = True,
+        kind: str = "TABLE",
+        **drop_args: t.Any,
+    ) -> None:
+        # Oracle versions prior to 23ai did not directly support the IF EXISTS in DDL statements
+        if exists:
+            exists = False
+            if kind.upper() == "TABLE" and not self.table_exists(name):
+                return
+
+        self.execute(exp.Drop(this=exp.to_table(name), kind=kind, exists=exists, **drop_args))
 
     def alter_table(
         self,
@@ -247,6 +261,26 @@ class OracleEngineAdapter(
         parameters = DataFrameConverter.to_records(query_or_df)
         self.execute(insert_exp, parameters=parameters)
 
+    def _insert_overwrite_by_condition(
+        self,
+        table_name: TableName,
+        source_queries_or_df: t.Union[t.List[SourceQuery], DF],
+        columns_to_types: t.Optional[t.Dict[str, exp.DataType]] = None,
+        where: t.Optional[exp.Condition] = None,
+        insert_overwrite_strategy_override: t.Optional[InsertOverwriteStrategy] = None,
+        **kwargs: t.Any,
+    ) -> None:
+        if not isinstance(source_queries_or_df, list):
+            columns_to_types = columns_to_types or columns_to_types_from_df(source_queries_or_df)
+        columns_to_types = columns_to_types or self.columns(table_name)
+
+        if isinstance(source_queries_or_df, list):
+            super()._insert_overwrite_by_condition(table_name, source_queries_or_df, columns_to_types, where or exp.condition("1=1"), insert_overwrite_strategy_override, **kwargs)
+        else:
+            with self.transaction():
+                self.delete_from(table_name, where or exp.condition("1=1"))
+                self.insert_append(table_name, source_queries_or_df, columns_to_types)
+
     def update_table(
         self,
         table_name: TableName,
@@ -267,7 +301,27 @@ class OracleEngineAdapter(
         when_matched: t.Optional[exp.Whens] = None,
         merge_filter: t.Optional[exp.Expression] = None,
     ) -> None:
-        if isinstance(source_table, (exp.Query, exp.DerivedTable)): # TODO
+        if not isinstance(source_table, (exp.Query, exp.DerivedTable)):
+            columns_to_types = columns_to_types or columns_to_types_from_df(source_table)
+        columns_to_types = columns_to_types or self.columns(target_table)
+
+        if isinstance(source_table, (exp.Query, exp.DerivedTable)):
+            if not when_matched:
+                when_matched = exp.Whens(expressions=[
+                    exp.When(
+                        matched=True,
+                        source=False,
+                        then=exp.Update(
+                            expressions=[
+                                exp.column(col, MERGE_TARGET_ALIAS).eq(
+                                    exp.column(col, MERGE_SOURCE_ALIAS)
+                                )
+                                for col in columns_to_types if exp.column(col) not in unique_key
+                            ],
+                        ),
+                    )
+                ])
+
             return super().merge(
                 target_table, source_table,
                 columns_to_types=columns_to_types,
@@ -276,18 +330,15 @@ class OracleEngineAdapter(
                 merge_filter=merge_filter
             )
         
-        columns_to_types = columns_to_types or columns_to_types_from_df(source_table)
-        columns_to_types = columns_to_types or self.columns(target_table)
         placeholder_map = self._build_placeholder_map(columns_to_types)
         on = exp.and_(
             *(
-                part.eq(exp.Placeholder(this=placeholder_map[part.sql()]))
+                add_table(part, MERGE_TARGET_ALIAS).eq(exp.Placeholder(this=placeholder_map[part.sql()]))
                 for part in unique_key
             )
         )
         if merge_filter:
             on = exp.and_(merge_filter, on)
-        on = exp.Paren(this=on)
 
         if not when_matched:
             when_matched = exp.Whens()
@@ -298,7 +349,7 @@ class OracleEngineAdapter(
                     source=False,
                     then=exp.Update(
                         expressions=[
-                            exp.column(col).eq(exp.Placeholder(this=placeholder_map[col]))
+                            exp.column(col, MERGE_TARGET_ALIAS).eq(exp.Placeholder(this=placeholder_map[col]))
                             for col in columns_to_types if exp.column(col) not in unique_key
                         ],
                     ),
@@ -306,23 +357,8 @@ class OracleEngineAdapter(
             )
         else:
             for node in when_matched.find_all(exp.Column):
-                if node.table == MERGE_TARGET_ALIAS:
-                    node.replace(exp.column(node.this))
-                elif node.table == MERGE_SOURCE_ALIAS:
+                if node.table == MERGE_SOURCE_ALIAS:
                     node.replace(exp.Placeholder(this=placeholder_map[node.this.sql()]))
-
-            for when_exp in when_matched.find_all(exp.When):
-                condition = when_exp.args.get("condition", False)
-                when_exp.args["condition"] = False
-                if condition is not False:
-                    if when_exp.args["matched"]:
-                        for update_exp in when_exp.find_all(exp.Update):
-                            update_exp.replace(self._to_sql(update_exp.where(condition), quote=True))
-                    else:
-                        for insert_exp in when_exp.find_all(exp.Insert):
-                            oracle_when_exp = self._to_sql(exp.When(matched=False, then=insert_exp), quote=True)
-                            oracle_when_exp += " " + self._to_sql(exp.Where(this=condition), quote=True)
-                            when_exp.replace(oracle_when_exp)
 
         when_not_matched = exp.When(
             matched=False,
@@ -336,9 +372,62 @@ class OracleEngineAdapter(
         )
         when_matched.append("expressions", when_not_matched)
 
-        merge_exp = exp.Merge(this=exp.to_table(target_table), using="DUAL", on=on, whens=when_matched)
         t.cast("pd.DataFrame", source_table).rename(columns=placeholder_map, inplace=True)
-        parameters = DataFrameConverter.to_records(source_table)
+        self._merge(target_table, source_table, on, whens=when_matched)
+
+    def _merge(
+        self,
+        target_table: TableName,
+        query: QueryOrDF,
+        on: exp.Expression,
+        whens: exp.Whens,
+    ) -> None:
+        """
+        Executes a MERGE statement against an Oracle database.
+
+        This method is responsible for translating a generic SQLGlot MERGE expression
+        into Oracle's specific syntax, especially handling placeholder-based DML
+        for DataFrame operations and the unique syntax for conditional WHEN clauses.
+        """
+        if isinstance(query, (exp.Query, exp.DerivedTable)):
+            # For query-based sources, we execute the MERGE statement directly.
+            parameters = None
+            using = exp.alias_(
+                exp.Subquery(this=query), alias=MERGE_SOURCE_ALIAS, copy=False, table=True
+            )
+        else:
+            # For DataFrame-based sources, we use parameter binding for performance and safety.
+            # Oracle's MERGE...USING DUAL pattern allows us to treat each row of the DataFrame
+            # as a set of parameters for a single-row merge operation, executed efficiently via `executemany`.
+            parameters = DataFrameConverter.to_records(query)
+            using = "DUAL"
+        
+        this = exp.alias_(exp.to_table(target_table), alias=MERGE_TARGET_ALIAS, table=True)
+        if not isinstance(on, exp.Paren):
+            on = exp.Paren(this=on)
+
+        # Oracle has a non-standard syntax for conditional updates and inserts within a MERGE.
+        # This loop finds all WHEN clauses and rewrites them to be Oracle-compliant.
+        for when_exp in whens.find_all(exp.When):
+            condition = when_exp.args.get("condition", False)
+            # Remove the generic 'condition' from the WHEN clause itself,
+            # and re-inject it in the Oracle-specific location (the WHERE clause of the UPDATE/INSERT).
+            when_exp.args["condition"] = False
+            if condition is not False:
+                if when_exp.args["matched"]:
+                    # WHEN MATCHED AND condition THEN UPDATE SET column_value_pairs
+                    # -> WHEN MATCHED THEN UPDATE SET column_value_pairs WHERE condition
+                    for update_exp in when_exp.find_all(exp.Update):
+                        update_exp.replace(self._to_sql(update_exp.where(condition), quote=True))
+                else:
+                    # WHEN NOT MATCHED AND condition THEN merge_insert
+                    # -> WHEN NOT MATCHED THEN merge_insert WHERE condition
+                    for insert_exp in when_exp.find_all(exp.Insert):
+                        oracle_when_exp = self._to_sql(exp.When(matched=False, then=insert_exp), quote=True)
+                        oracle_when_exp += " " + self._to_sql(exp.Where(this=condition), quote=True)
+                        when_exp.replace(oracle_when_exp)
+        
+        merge_exp = exp.Merge(this=this, using=using, on=on, whens=whens)
         self.execute(merge_exp, parameters=parameters)
 
     def _execute(self, sql: str, parameters: t.Optional[t.List[t.Any]] = None, **kwargs: t.Any) -> None:
@@ -409,17 +498,6 @@ class OracleEngineAdapter(
             )
             for row in df.itertuples()
         ]
-    
-    def _insert_overwrite_by_condition(
-        self,
-        table_name: TableName,
-        source_queries: t.List[SourceQuery],
-        columns_to_types: t.Optional[t.Dict[str, exp.DataType]] = None,
-        where: t.Optional[exp.Condition] = None,
-        insert_overwrite_strategy_override: t.Optional[InsertOverwriteStrategy] = None,
-        **kwargs: t.Any,
-    ) -> None:
-        super()._insert_overwrite_by_condition(table_name, source_queries, columns_to_types, where or exp.condition("1=1"), insert_overwrite_strategy_override, **kwargs)
 
     def ping(self) -> None:
         try:

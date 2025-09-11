@@ -29,17 +29,13 @@ def transform_data(transformation_pipeline: t.List[TransformationConfig], contex
     2. Appending all user-defined transformers from the configuration.
     """
     trans_chain = TransformationPipeline()
+    foreachbatch_options = _find_first_foreachbatch_options(transformation_pipeline)
     audit_manager = context.audit_manager
     # If auditing is available, the WatermarkTracker must be before all user-defined operations.
     if audit_manager and context.job_props_model.source_watermark:
-        # Find the first user-defined ForeachBatch to inherit its checkpointing options.
-        options = {}
-        for transform_cfg in transformation_pipeline:
-            transformer = transformer_factory(transform_cfg.name)
-            if isinstance(transformer, ForeachBatch):
-                options = transform_cfg.options.copy()
-                break
-        trans_chain.add_transformer(WatermarkTracker(context), **merge_dicts(context.job_props, options))
+        # Inherit checkpointing options of the first user-defined ForeachBatch
+        foreachbatch_options = foreachbatch_options or {}
+        trans_chain.add_transformer(WatermarkTracker(context), **merge_dicts(context.job_props, foreachbatch_options))
 
     # Build transformation pipeline
     for transform_cfg in transformation_pipeline:
@@ -50,6 +46,15 @@ def transform_data(transformation_pipeline: t.List[TransformationConfig], contex
             transformer_logger = logging.getLogger(transformer.__class__.__name__)
             transformer_logger.exception(f"TypeError during transformer setup: {e}")
             raise e
+        
+    data_save_mode = context.job_props_model.data_save_mode
+    # NOTE: Many sink adapters expect a static, batch DataFrame for a MERGE operation,
+    # which is incompatible with an unbounded streaming source.
+    # If a streaming pipeline is configured with a MERGE sink but lacks a ForeachBatch transformer,
+    # this injects one automatically and converts the stream into compatible micro-batches.
+    if data_save_mode == DataSaveMode.MERGE and foreachbatch_options is None:
+        foreachbatch_options = {}
+        trans_chain.add_transformer(ForeachBatch(), **context.job_props)
 
     return trans_chain
 
@@ -109,6 +114,18 @@ def _process_dataset_loop(dataset, t_chain: TransformationPipeline, context: Job
             continue
 
         t_chain.apply(df)
+
+def _find_first_foreachbatch_options(
+    transformation_pipeline: t.List[TransformationConfig]
+) -> t.Dict[str, t.Any]:
+    """
+    Scans the user-defined transformation pipeline to find the first instance of a ForeachBatch transformer.
+    """
+    for transform_cfg in transformation_pipeline:
+        transformer = transformer_factory(transform_cfg.name)
+        if isinstance(transformer, ForeachBatch):
+            return transform_cfg.options.copy()
+    return None
 
 class MicroBatchWriter:
     def __init__(self, base_writer: EngineAdapter):

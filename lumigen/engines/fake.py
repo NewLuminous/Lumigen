@@ -54,11 +54,13 @@ class FakeConnection:
             setattr(self, k, v)
 
     def cursor(self) -> FakeCursor:
-        return FakeCursor(self.schema_type, getattr(self, "num_row", 5))
+        return FakeCursor(getattr(self, "schema_type", []), getattr(self, "num_row", 5))
     
     def commit(self) -> None: ...
     
     def rollback(self) -> None: ...
+
+    def close(self) -> None: ...
 
 def connection(*args, **kwargs) -> FakeConnection:
     return FakeConnection(*args, **kwargs)

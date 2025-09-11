@@ -68,6 +68,10 @@ class SparkJDBCCursor(SparkStreamToBatchCursor):
 
         parsed_exp = parse_one(query, dialect=self.dialect)
         if df and isinstance(parsed_exp, exp.Insert):
+            # In a streaming `foreachBatch` write, only the first batch (batch_id=0) should perform an overwrite.
+            # All subsequent batches must be appended.
+            if batch_id > 0:
+                parsed_exp.set("overwrite", False)
             self._write(parsed_exp, df, **kwargs)
         else:
             self._last_df = self._spark.read.format("jdbc") \

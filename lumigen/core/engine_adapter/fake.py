@@ -14,14 +14,14 @@ if t.TYPE_CHECKING:
     from core._typing import DataFrameType
     from core.config.connection import ConsoleConfig
 
-from core.engine_adapter.mixins import EngineAdapterMixin, FetchBatchMixin
+from core.engine_adapter.mixins import EngineAdapterMixin, FetchBatchMixin, QueryBuilderMixin
 from core.engine_context import SQLContextManager
 from utils.dataset import DataFrameConverter
 
 logger = logging.getLogger(__name__)
 
 
-class FakeEngineAdapter(FetchBatchMixin, EngineAdapterMixin):
+class FakeEngineAdapter(QueryBuilderMixin, FetchBatchMixin, EngineAdapterMixin):
     DIALECT: str = "fake"
 
     def fetch_pyspark_df(
@@ -68,6 +68,9 @@ class FakeEngineAdapter(FetchBatchMixin, EngineAdapterMixin):
 
     def ping(self) -> None: ...
 
+    def table_exists(self, table_name: str) -> bool:
+        return False
+
     def _to_sql(self, expression: exp.Expression, quote: bool = True, **kwargs: t.Any) -> str:
         sql_gen_kwargs = {
             "pretty": self._pretty_sql,
@@ -85,3 +88,11 @@ class FakeEngineAdapter(FetchBatchMixin, EngineAdapterMixin):
     
     def get_all_data_objects(self, keyword: str="") -> t.List[t.Any]:
         return []
+    
+    def build_query(
+        self,
+        path: t.Optional[str] = None,
+        query: t.Optional[str] = None,
+        **kwargs: t.Any,
+    ) -> t.Any:
+        return query or path

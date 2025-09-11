@@ -49,4 +49,5 @@ transformation_pipeline:
       as_column: created_at
 
 job_properties:
+  source_table: fake_users
   source_batch_size: 5
