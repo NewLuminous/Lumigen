@@ -83,7 +83,7 @@ class AuditManager:
                 if not current_columns.get(expected_col):
                     new_schema[expected_col] = expected_dtype
 
-            alter_expressions = self.adapter.SCHEMA_DIFFER.compare_columns(
+            alter_expressions = self.adapter.schema_differ.compare_columns(
                 table_name=table_name,
                 current=current_schema,
                 new=new_schema,
@@ -285,17 +285,17 @@ class AuditManager:
 
                 if record_exists is None:
                     self.adapter.merge(
-                        target_table=self.STATE_TABLE,
-                        source_table=source_df,
-                        columns_to_types=columns_to_types,
-                        unique_key=unique_key,
+                        self.STATE_TABLE,
+                        source_df,
+                        columns_to_types,
+                        unique_key,
                         when_matched=None,
                     )
                 else:
                     self.adapter.insert_append(
                         self.STATE_TABLE,
                         source_df, 
-                        columns_to_types=columns_to_types
+                        columns_to_types
                     )
             else:
                 update_payload = source_row_dict.copy()

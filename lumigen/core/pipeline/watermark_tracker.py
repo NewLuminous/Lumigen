@@ -23,6 +23,7 @@ class WatermarkTracker(ForeachBatch):
     A system-level transformer that enables stateful, incremental data processing.
 
     It intercepts each data batch to:
+
     1. Calculate the high watermark value from the batch.
     2. Atomically update the persistent state in the audit store AND execute the
        downstream user pipeline. This ensures that state is only advanced if the

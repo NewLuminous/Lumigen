@@ -122,17 +122,19 @@ class EngineAdapterMixin(EngineAdapter):
     def _values_to_sql(
         self,
         values: t.List[t.Tuple[t.Any, ...]],
-        columns_to_types: t.Dict[str, exp.DataType],
+        target_columns_to_types: t.Dict[str, exp.DataType],
         batch_start: int,
         batch_end: int,
         alias: str = "t",
+        source_columns: t.Optional[t.List[str]] = None,
     ) -> Query:
         return select_from_values_for_batch_range(
             values=values,
-            columns_to_types=columns_to_types,
+            target_columns_to_types=target_columns_to_types,
             batch_start=batch_start,
             batch_end=batch_end,
             alias=alias,
+            source_columns=source_columns,
         )
     
 class QueryBuilderMixin(ABC):

@@ -27,6 +27,7 @@ class SparkKafkaEngineAdapter(SparkEngineAdapter, KafkaEngineAdapter):
         self,
         topics: str, # List of topics separated by comma
         df: DataFrameType,
+        *args: t.Any,
         **kwargs: t.Any,
     ) -> None:
         topic_list = [tn.strip() for tn in topics.split(',')]
@@ -46,6 +47,7 @@ class SparkKafkaEngineAdapter(SparkEngineAdapter, KafkaEngineAdapter):
         self,
         topic: str,
         df: DataFrameType,
+        *args: t.Any,
         **kwargs: t.Any,
     ) -> None:
         if ',' in topic:

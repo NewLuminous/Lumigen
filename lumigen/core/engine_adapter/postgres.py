@@ -23,6 +23,7 @@ class PostgresEngineAdapter(
         expressions: t.Union[str, exp.Expression, t.Sequence[exp.Expression]],
         ignore_unsupported_errors: bool = False,
         quote_identifiers: bool = True,
+        track_rows_processed: bool = False,
         **kwargs: t.Any,
     ) -> None:
         class JsonbObject(exp.Map):
@@ -39,7 +40,7 @@ class PostgresEngineAdapter(
                     if node.is_type(exp.DataType.Type.ARRAY):
                         node.replace(node.this)
 
-        super().execute(expressions, ignore_unsupported_errors, quote_identifiers, **kwargs)
+        super().execute(expressions, ignore_unsupported_errors, quote_identifiers, track_rows_processed, **kwargs)
 
     def get_all_data_objects(self, keyword: str="") -> t.List[DataObject]:
         keyword = keyword.strip()

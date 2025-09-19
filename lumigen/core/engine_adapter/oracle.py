@@ -12,7 +12,6 @@ import pandas as pd
 from sqlmesh.core.dialect import add_table, to_schema
 from sqlmesh.core.engine_adapter.base import EngineAdapterWithIndexSupport, MERGE_SOURCE_ALIAS, MERGE_TARGET_ALIAS
 from sqlmesh.core.engine_adapter.mixins import (
-    InsertOverwriteWithMergeMixin,
     NonTransactionalTruncateMixin,
     PandasNativeFetchDFSupportMixin,
     RowDiffMixin,
@@ -46,15 +45,20 @@ class OracleEngineAdapter(
     EngineAdapterMixin,
 ):
     DIALECT: str = "oracle"
+    SUPPORTS_TRANSACTIONS = True
     COMMENT_CREATION_TABLE = CommentCreationTable.COMMENT_COMMAND_ONLY
     COMMENT_CREATION_VIEW = CommentCreationView.COMMENT_COMMAND_ONLY
     MAX_TABLE_COMMENT_LENGTH = 4000
     MAX_COLUMN_COMMENT_LENGTH = 4000
+    INSERT_OVERWRITE_STRATEGY = InsertOverwriteStrategy.DELETE_INSERT
     SUPPORTS_MATERIALIZED_VIEWS = True
     SUPPORTS_MATERIALIZED_VIEW_SCHEMA = False
+    SUPPORTS_CREATE_DROP_CATALOG = False
+    SUPPORTS_TUPLE_IN = True
     SUPPORTS_REPLACE_TABLE = False
-    SCHEMA_DIFFER = SchemaDiffer(
-        parameterized_type_defaults={
+    SUPPORTS_QUERY_EXECUTION_TRACKING = True
+    SCHEMA_DIFFER_KWARGS = {
+        "parameterized_type_defaults": {
             exp.DataType.build("VARCHAR2", dialect=DIALECT).this: [(1,)],
             exp.DataType.build("NVARCHAR2", dialect=DIALECT).this: [(1,)],
             exp.DataType.build("NUMBER", dialect=DIALECT).this: [(38, 127), (0,)],
@@ -65,7 +69,7 @@ class OracleEngineAdapter(
             exp.DataType.build("CHAR", dialect=DIALECT).this: [(1,)],
             exp.DataType.build("NCHAR", dialect=DIALECT).this: [(1,)],
         },
-        max_parameter_length={
+        "max_parameter_length": {
             exp.DataType.build("VARCHAR2", dialect=DIALECT).this: 4000,
             exp.DataType.build("NVARCHAR2", dialect=DIALECT).this: 4000,
             #exp.DataType.build("RAW", dialect=DIALECT).this: 2000,
@@ -73,22 +77,30 @@ class OracleEngineAdapter(
             exp.DataType.build("CHAR", dialect=DIALECT).this: 2000,
             exp.DataType.build("NCHAR", dialect=DIALECT).this: 2000,
         },
-        coerceable_types={
+        "coerceable_types": {
             exp.DataType.build("TIMESTAMP(6)", dialect=DIALECT): {
                 exp.DataType.build("TIMESTAMP", dialect=DIALECT)
             }
         },
-    )
+    }
     VARIABLE_LENGTH_DATA_TYPES = {"VARCHAR2", "NVARCHAR2", "CHAR", "NCHAR"}
 
     @classmethod
-    def _casted_columns(cls, columns_to_types: t.Dict[str, exp.DataType]) -> t.List[exp.Alias]:
+    def _casted_columns(
+        cls,
+        target_columns_to_types: t.Dict[str, exp.DataType],
+        source_columns: t.Optional[t.List[str]] = None,
+    ) -> t.List[exp.Alias]:
         return [
             exp.alias_(
-                exp.cast(exp.null(), to=kind if not kind.is_type(exp.DataType.Type.TEXT) else "VARCHAR2(4000)"),
-                column, copy=False
+                exp.cast(
+                    exp.null(),
+                    to=kind if not kind.is_type(exp.DataType.Type.TEXT) else "VARCHAR2(4000)",
+                ),
+                column,
+                copy=False,
             )
-            for column, kind in columns_to_types.items()
+            for column, kind in target_columns_to_types.items()
         ]
     
     def _drop_object(
@@ -96,6 +108,7 @@ class OracleEngineAdapter(
         name: TableName | SchemaName,
         exists: bool = True,
         kind: str = "TABLE",
+        cascade: bool = False,
         **drop_args: t.Any,
     ) -> None:
         # Oracle versions prior to 23ai did not directly support the IF EXISTS in DDL statements
@@ -104,7 +117,7 @@ class OracleEngineAdapter(
             if kind.upper() == "TABLE" and not self.table_exists(name):
                 return
 
-        self.execute(exp.Drop(this=exp.to_table(name), kind=kind, exists=exists, **drop_args))
+        self._drop_object(name, exists, kind, cascade, **drop_args)
 
     def alter_table(
         self,
@@ -202,9 +215,11 @@ class OracleEngineAdapter(
         self,
         table_name: TableName,
         query_or_df: QueryOrDF,
-        columns_to_types: t.Optional[t.Dict[str, exp.DataType]] = None,
+        target_columns_to_types: t.Optional[t.Dict[str, exp.DataType]] = None,
         table_description: t.Optional[str] = None,
         column_descriptions: t.Optional[t.Dict[str, str]] = None,
+        source_columns: t.Optional[t.List[str]] = None,
+        supports_replace_table_override: t.Optional[bool] = None,
         **kwargs: t.Any,
     ) -> None:
         """Replaces an existing table with a query.
@@ -212,74 +227,76 @@ class OracleEngineAdapter(
         Args:
             table_name: The name of the table (eg. prod.table)
             query_or_df: The SQL query to run or a dataframe.
-            columns_to_types: Optional a mapping between the column name and its data type.
+            target_columns_to_types: Optional a mapping between the column name and its data type.
             kwargs: Optional create table properties.
         """
         if isinstance(query_or_df, (exp.Query, exp.DerivedTable)): # TODO
-            super().replace_query(table_name, query_or_df, columns_to_types, table_description, column_descriptions, **kwargs)
+            super().replace_query(table_name, query_or_df, target_columns_to_types, table_description, column_descriptions, source_columns, supports_replace_table_override, **kwargs)
             return
         
         target_table = exp.to_table(table_name)
         #target_table = f"{target_table.sql(dialect=self.dialect, identify=True)}"
-        columns_to_types = columns_to_types or columns_to_types_from_df(query_or_df)
-        columns_to_types = columns_to_types or self.columns(target_table)
+        target_columns_to_types = target_columns_to_types or columns_to_types_from_df(query_or_df)
+        target_columns_to_types = target_columns_to_types or self.columns(target_table)
         table_exists = self.table_exists(target_table)
         if not table_exists:
-            casted_columns = self._casted_columns(columns_to_types)
+            casted_columns = self._casted_columns(target_columns_to_types)
             select_schema_exp = exp.select(*casted_columns).from_(exp.to_table("DUAL"), copy=False).where(exp.condition("0=1"), copy=False)
             self._create_table(target_table, expression=select_schema_exp, exists=False, replace=False)
 
         with self.transaction():
             if table_exists:
                 self._truncate_table(table_name)
-            self.insert_append(target_table, query_or_df, columns_to_types=columns_to_types)
+            self.insert_append(target_table, query_or_df, target_columns_to_types=target_columns_to_types)
 
     def insert_append(
         self,
         table_name: TableName,
         query_or_df: QueryOrDF,
-        columns_to_types: t.Optional[t.Dict[str, exp.DataType]] = None,
+        target_columns_to_types: t.Optional[t.Dict[str, exp.DataType]] = None,
+        track_rows_processed: bool = True,
+        source_columns: t.Optional[t.List[str]] = None,
     ) -> None:
         if isinstance(table_name, (exp.Query, exp.DerivedTable)): # TODO
-            super().insert_append(table_name, query_or_df, columns_to_types)
+            super().insert_append(table_name, query_or_df, target_columns_to_types, track_rows_processed, source_columns)
             return
         
         target_table = exp.to_table(table_name)
-        columns_to_types = columns_to_types or columns_to_types_from_df(query_or_df)
-        columns_to_types = columns_to_types or self.columns(table_name)
-        placeholder_map = self._build_placeholder_map(columns_to_types)
+        target_columns_to_types = target_columns_to_types or columns_to_types_from_df(query_or_df)
+        target_columns_to_types = target_columns_to_types or self.columns(table_name)
+        placeholder_map = self._build_placeholder_map(target_columns_to_types)
 
         table_exists = self.table_exists(target_table)
         if not table_exists:
-            casted_columns = self._casted_columns(columns_to_types)
+            casted_columns = self._casted_columns(target_columns_to_types)
             select_schema_exp = exp.select(*casted_columns).from_(exp.to_table("DUAL"), copy=False).where(exp.condition("0=1"), copy=False)
             self._create_table(target_table, expression=select_schema_exp, exists=False, replace=False)
 
-        values_exp = exp.values([tuple(exp.Placeholder(this=placeholder_map[col]) for col in columns_to_types)])
-        insert_exp = exp.insert(values_exp, table_name, columns=list(columns_to_types))
+        values_exp = exp.values([tuple(exp.Placeholder(this=placeholder_map[col]) for col in target_columns_to_types)])
+        insert_exp = exp.insert(values_exp, table_name, columns=list(target_columns_to_types))
         t.cast("pd.DataFrame", query_or_df).rename(columns=placeholder_map, inplace=True)
         parameters = DataFrameConverter.to_records(query_or_df)
-        self.execute(insert_exp, parameters=parameters)
+        self.execute(insert_exp, track_rows_processed=track_rows_processed, parameters=parameters)
 
     def _insert_overwrite_by_condition(
         self,
         table_name: TableName,
         source_queries_or_df: t.Union[t.List[SourceQuery], DF],
-        columns_to_types: t.Optional[t.Dict[str, exp.DataType]] = None,
+        target_columns_to_types: t.Optional[t.Dict[str, exp.DataType]] = None,
         where: t.Optional[exp.Condition] = None,
         insert_overwrite_strategy_override: t.Optional[InsertOverwriteStrategy] = None,
         **kwargs: t.Any,
     ) -> None:
         if not isinstance(source_queries_or_df, list):
-            columns_to_types = columns_to_types or columns_to_types_from_df(source_queries_or_df)
-        columns_to_types = columns_to_types or self.columns(table_name)
+            target_columns_to_types = target_columns_to_types or columns_to_types_from_df(source_queries_or_df)
+        target_columns_to_types = target_columns_to_types or self.columns(table_name)
 
         if isinstance(source_queries_or_df, list):
-            super()._insert_overwrite_by_condition(table_name, source_queries_or_df, columns_to_types, where or exp.condition("1=1"), insert_overwrite_strategy_override, **kwargs)
+            super()._insert_overwrite_by_condition(table_name, source_queries_or_df, target_columns_to_types, where or exp.condition("1=1"), insert_overwrite_strategy_override, **kwargs)
         else:
             with self.transaction():
                 self.delete_from(table_name, where or exp.condition("1=1"))
-                self.insert_append(table_name, source_queries_or_df, columns_to_types)
+                self.insert_append(table_name, source_queries_or_df, target_columns_to_types)
 
     def update_table(
         self,
@@ -296,14 +313,16 @@ class OracleEngineAdapter(
         self,
         target_table: TableName,
         source_table: QueryOrDF,
-        columns_to_types: t.Optional[t.Dict[str, exp.DataType]],
+        target_columns_to_types: t.Optional[t.Dict[str, exp.DataType]],
         unique_key: t.Sequence[exp.Expression],
         when_matched: t.Optional[exp.Whens] = None,
         merge_filter: t.Optional[exp.Expression] = None,
+        source_columns: t.Optional[t.List[str]] = None,
+        **kwargs: t.Any,
     ) -> None:
         if not isinstance(source_table, (exp.Query, exp.DerivedTable)):
-            columns_to_types = columns_to_types or columns_to_types_from_df(source_table)
-        columns_to_types = columns_to_types or self.columns(target_table)
+            target_columns_to_types = target_columns_to_types or columns_to_types_from_df(source_table)
+        target_columns_to_types = target_columns_to_types or self.columns(target_table)
 
         if isinstance(source_table, (exp.Query, exp.DerivedTable)):
             if not when_matched:
@@ -316,7 +335,7 @@ class OracleEngineAdapter(
                                 exp.column(col, MERGE_TARGET_ALIAS).eq(
                                     exp.column(col, MERGE_SOURCE_ALIAS)
                                 )
-                                for col in columns_to_types if exp.column(col) not in unique_key
+                                for col in target_columns_to_types if exp.column(col) not in unique_key
                             ],
                         ),
                     )
@@ -324,13 +343,15 @@ class OracleEngineAdapter(
 
             return super().merge(
                 target_table, source_table,
-                columns_to_types=columns_to_types,
+                target_columns_to_types=target_columns_to_types,
                 unique_key=unique_key,
                 when_matched=when_matched,
-                merge_filter=merge_filter
+                merge_filter=merge_filter,
+                source_columns=source_columns,
+                **kwargs
             )
         
-        placeholder_map = self._build_placeholder_map(columns_to_types)
+        placeholder_map = self._build_placeholder_map(target_columns_to_types)
         on = exp.and_(
             *(
                 add_table(part, MERGE_TARGET_ALIAS).eq(exp.Placeholder(this=placeholder_map[part.sql()]))
@@ -350,7 +371,7 @@ class OracleEngineAdapter(
                     then=exp.Update(
                         expressions=[
                             exp.column(col, MERGE_TARGET_ALIAS).eq(exp.Placeholder(this=placeholder_map[col]))
-                            for col in columns_to_types if exp.column(col) not in unique_key
+                            for col in target_columns_to_types if exp.column(col) not in unique_key
                         ],
                     ),
                 ),
@@ -364,9 +385,9 @@ class OracleEngineAdapter(
             matched=False,
             source=False,
             then=exp.Insert(
-                this=exp.Tuple(expressions=[exp.column(col) for col in columns_to_types]),
+                this=exp.Tuple(expressions=[exp.column(col) for col in target_columns_to_types]),
                 expression=exp.Tuple(
-                    expressions=[exp.Placeholder(this=placeholder_map[col]) for col in columns_to_types]
+                    expressions=[exp.Placeholder(this=placeholder_map[col]) for col in target_columns_to_types]
                 ),
             ),
         )
@@ -428,9 +449,9 @@ class OracleEngineAdapter(
                         when_exp.replace(oracle_when_exp)
         
         merge_exp = exp.Merge(this=this, using=using, on=on, whens=whens)
-        self.execute(merge_exp, parameters=parameters)
+        self.execute(merge_exp, track_rows_processed=True, parameters=parameters)
 
-    def _execute(self, sql: str, parameters: t.Optional[t.List[t.Any]] = None, **kwargs: t.Any) -> None:
+    def _execute(self, sql: str, track_rows_processed: bool = False, parameters: t.Optional[t.List[t.Any]] = None, **kwargs: t.Any) -> None:
         if parameters:
             if isinstance(parameters, list):
                 self.cursor.executemany(sql, parameters)
@@ -438,6 +459,20 @@ class OracleEngineAdapter(
                 self.cursor.execute(sql, parameters)
         else:
             self.cursor.execute(sql)
+
+        if (
+            self.SUPPORTS_QUERY_EXECUTION_TRACKING
+            and track_rows_processed
+            and self._query_execution_tracker
+            and self._query_execution_tracker.is_tracking()
+        ):
+            if (
+                rowcount := getattr(self.cursor, "rowcount", None)
+            ) is not None and rowcount is not None:
+                try:
+                    self._record_execution_stats(sql, int(rowcount))
+                except (TypeError, ValueError):
+                    return
     
     def _get_data_objects(
         self, schema_name: SchemaName, object_names: t.Optional[t.Set[str]] = None

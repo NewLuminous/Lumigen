@@ -3,15 +3,18 @@ from __future__ import annotations
 import abc
 import logging
 import os
+import importlib
 import sys
 import typing as t
 from functools import partial
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
+from pydantic_core import from_json
 from sqlglot.helper import subclasses
 from sqlmesh.core.config.base import BaseConfig
 from sqlmesh.core.engine_adapter.shared import CatalogSupport
 from sqlmesh.core.engine_adapter import EngineAdapter
-from sqlmesh.utils.pydantic import PYDANTIC_MAJOR_VERSION
+from sqlmesh.utils.pydantic import PYDANTIC_MAJOR_VERSION, get_concrete_types_from_typehint
+from sqlmesh.utils import str_to_bool
 
 from utils.errors import ConfigError
 from core import engine_adapter
@@ -28,14 +31,41 @@ logger = logging.getLogger(__name__)
 SUPPORTED_AUDIT_ENGINES = {"oracle", "postgres", "mssql", "mysql"}
 
 
+def _get_engine_import_validator(
+    import_name: str, engine_type: str, extra_name: t.Optional[str] = None, decorate: bool = True
+) -> t.Callable:
+    extra_name = extra_name or engine_type
+
+    def validate(cls: t.Any, data: t.Any) -> t.Any:
+        check_import = (
+            str_to_bool(str(data.pop("check_import", True))) if isinstance(data, dict) else True
+        )
+        if not check_import:
+            return data
+        try:
+            importlib.import_module(import_name)
+        except ImportError:
+            logger.exception("Failed to import the engine library")
+
+            raise ConfigError(
+                f"Failed to import the '{engine_type}' engine library. This may be due to a missing "
+                "or incompatible installation. Please ensure the required dependency is installed."
+            )
+
+        return data
+
+    return model_validator(mode="before")(validate) if decorate else validate
+
 class ConnectionConfig(abc.ABC, BaseConfig):
     type_: str
     concurrent_tasks: int
     register_comments: bool
     pre_ping: bool
     pretty_sql: bool = False
+    schema_differ_overrides: t.Optional[t.Dict[str, t.Any]] = None
+    catalog_type_overrides: t.Optional[t.Dict[str, str]] = None
 
-    # Whether to share a  single connection across threads or create a new connection per thread.
+    # Whether to share a single connection across threads or create a new connection per thread.
     shared_connection: t.ClassVar[bool] = False
 
     @property
@@ -108,6 +138,8 @@ class ConnectionConfig(abc.ABC, BaseConfig):
             pre_ping=self.pre_ping,
             pretty_sql=self.pretty_sql,
             shared_connection=self.shared_connection,
+            schema_differ_overrides=self.schema_differ_overrides,
+            catalog_type_overrides=self.catalog_type_overrides,
             **self._extra_engine_config,
         )
 
@@ -120,6 +152,32 @@ class ConnectionConfig(abc.ABC, BaseConfig):
         if hasattr(self, "db"):
             return self.db
         return None
+    
+    @model_validator(mode="before")
+    @classmethod
+    def _expand_json_strings_to_concrete_types(cls, data: t.Any) -> t.Any:
+        if data and isinstance(data, dict):
+            for maybe_json_field_name in cls._get_list_and_dict_field_names():
+                if (value := data.get(maybe_json_field_name)) and isinstance(value, str):
+                    # crude JSON check as we dont want to try and parse every string we get
+                    value = value.strip()
+                    if value.startswith("{") or value.startswith("["):
+                        data[maybe_json_field_name] = from_json(value)
+
+        return data
+
+    @classmethod
+    def _get_list_and_dict_field_names(cls) -> t.Set[str]:
+        field_names = set()
+        for name, field in cls.model_fields.items():
+            if field.annotation:
+                field_types = get_concrete_types_from_typehint(field.annotation)
+
+                # check if the field type is something that could concievably be supplied as a json string
+                if any(ft is t for t in (list, tuple, set, dict) for ft in field_types):
+                    field_names.add(name)
+
+        return field_names
     
     def get_address(self) -> t.Optional[str]:
         """The address for this connection"""
@@ -150,6 +208,8 @@ class OracleConnectionConfig(ConnectionConfig):
     pre_ping: bool = True
 
     type_: Literal["oracle"] = Field(alias="type", default="oracle")
+
+    _engine_import_validator = _get_engine_import_validator("oracledb", "oracle")
 
     @property
     def _connection_kwargs_keys(self) -> t.Set[str]:
@@ -190,6 +250,8 @@ class PostgresConnectionConfig(ConnectionConfig):
     pre_ping: bool = True
 
     type_: Literal["postgres"] = Field(alias="type", default="postgres")
+
+    _engine_import_validator = _get_engine_import_validator("psycopg2", "postgres")
 
     @property
     def _connection_kwargs_keys(self) -> t.Set[str]:
@@ -242,6 +304,8 @@ class MySQLConnectionConfig(ConnectionConfig):
 
     type_: Literal["mysql"] = Field(alias="type", default="mysql")
 
+    _engine_import_validator = _get_engine_import_validator("pymysql", "mysql")
+
     @property
     def _cursor_kwargs(self) -> t.Optional[t.Dict[str, t.Any]]:
         """Key-value arguments that will be passed during cursor construction."""
@@ -291,15 +355,50 @@ class MSSQLConnectionConfig(ConnectionConfig):
     autocommit: t.Optional[bool] = False
     tds_version: t.Optional[str] = None
 
+    # Driver options
+    driver: t.Literal["pymssql", "pyodbc"] = "pymssql"
+    # PyODBC specific options
+    driver_name: t.Optional[str] = None  # e.g. "ODBC Driver 18 for SQL Server"
+    trust_server_certificate: t.Optional[bool] = None
+    encrypt: t.Optional[bool] = None
+    # Dictionary of arbitrary ODBC connection properties
+    # See: https://learn.microsoft.com/en-us/sql/connect/odbc/dsn-connection-string-attribute
+    odbc_properties: t.Optional[t.Dict[str, t.Any]] = None
+
     concurrent_tasks: int = 4
     register_comments: bool = False
     pre_ping: bool = True
 
     type_: Literal["mssql"] = Field(alias="type", default="mssql")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _mssql_engine_import_validator(cls, data: t.Any) -> t.Any:
+        if not isinstance(data, dict):
+            return data
+
+        driver = data.get("driver", "pymssql")
+
+        # Define the mapping of driver to import module and extra name
+        driver_configs = {"pymssql": ("pymssql", "mssql"), "pyodbc": ("pyodbc", "mssql-odbc")}
+
+        if driver not in driver_configs:
+            raise ValueError(f"Unsupported driver: {driver}")
+
+        import_module, extra_name = driver_configs[driver]
+
+        # Use _get_engine_import_validator with decorate=False to get the raw validation function
+        # This avoids the __wrapped__ issue in Python 3.9
+        validator_func = _get_engine_import_validator(
+            import_module, driver, extra_name, decorate=False
+        )
+
+        # Call the raw validation function directly
+        return validator_func(cls, data)
+
     @property
     def _connection_kwargs_keys(self) -> t.Set[str]:
-        return {
+        base_keys = {
             "host",
             "user",
             "password",
@@ -314,15 +413,121 @@ class MSSQLConnectionConfig(ConnectionConfig):
             "tds_version",
         }
 
+        if self.driver == "pyodbc":
+            base_keys.update(
+                {
+                    "driver_name",
+                    "trust_server_certificate",
+                    "encrypt",
+                    "odbc_properties",
+                }
+            )
+            # Remove pymssql-specific parameters
+            base_keys.discard("tds_version")
+            base_keys.discard("conn_properties")
+
+        return base_keys
+
     @property
     def _engine_adapter(self) -> t.Type[EngineAdapter]:
         return engine_adapter.MSSQLEngineAdapter
 
     @property
     def _connection_factory(self) -> t.Callable:
-        import pymssql
+        if self.driver == "pymssql":
+            import pymssql
 
-        return pymssql.connect
+            return pymssql.connect
+
+        import pyodbc
+
+        def connect(**kwargs: t.Any) -> t.Callable:
+            # Extract parameters for connection string
+            host = kwargs.pop("host")
+            port = kwargs.pop("port", 1433)
+            database = kwargs.pop("database", "")
+            user = kwargs.pop("user", None)
+            password = kwargs.pop("password", None)
+            driver_name = kwargs.pop("driver_name", "ODBC Driver 18 for SQL Server")
+            trust_server_certificate = kwargs.pop("trust_server_certificate", False)
+            encrypt = kwargs.pop("encrypt", True)
+            login_timeout = kwargs.pop("login_timeout", 60)
+
+            # Build connection string
+            conn_str_parts = [
+                f"DRIVER={{{driver_name}}}",
+                f"SERVER={host},{port}",
+            ]
+
+            if database:
+                conn_str_parts.append(f"DATABASE={database}")
+
+            # Add security options
+            conn_str_parts.append(f"Encrypt={'YES' if encrypt else 'NO'}")
+            if trust_server_certificate:
+                conn_str_parts.append("TrustServerCertificate=YES")
+
+            conn_str_parts.append(f"Connection Timeout={login_timeout}")
+
+            # Standard SQL Server authentication
+            if user:
+                conn_str_parts.append(f"UID={user}")
+            if password:
+                conn_str_parts.append(f"PWD={password}")
+
+            # Add any additional ODBC properties from the odbc_properties dictionary
+            if self.odbc_properties:
+                for key, value in self.odbc_properties.items():
+                    # Skip properties that we've already set above
+                    if key.lower() in (
+                        "driver",
+                        "server",
+                        "database",
+                        "uid",
+                        "pwd",
+                        "encrypt",
+                        "trustservercertificate",
+                        "connection timeout",
+                    ):
+                        continue
+
+                    # Handle boolean values properly
+                    if isinstance(value, bool):
+                        conn_str_parts.append(f"{key}={'YES' if value else 'NO'}")
+                    else:
+                        conn_str_parts.append(f"{key}={value}")
+
+            # Create the connection string
+            conn_str = ";".join(conn_str_parts)
+
+            conn = pyodbc.connect(conn_str, autocommit=kwargs.get("autocommit", False))
+
+            # Set up output converters for MSSQL-specific data types
+            # Handle SQL type -155 (DATETIMEOFFSET) which is not yet supported by pyodbc
+            # ref: https://github.com/mkleehammer/pyodbc/issues/134#issuecomment-281739794
+            def handle_datetimeoffset(dto_value: t.Any) -> t.Any:
+                from datetime import datetime, timedelta, timezone
+                import struct
+
+                # Unpack the DATETIMEOFFSET binary format:
+                # Format: <6hI2h = (year, month, day, hour, minute, second, nanoseconds, tz_hour_offset, tz_minute_offset)
+                tup = struct.unpack("<6hI2h", dto_value)
+                return datetime(
+                    tup[0],
+                    tup[1],
+                    tup[2],
+                    tup[3],
+                    tup[4],
+                    tup[5],
+                    tup[6] // 1000,
+                    timezone(timedelta(hours=tup[7], minutes=tup[8])),
+                )
+
+            conn.add_output_converter(-155, handle_datetimeoffset)
+
+            return conn
+
+        return connect
     
     @property
     def _extra_engine_config(self) -> t.Dict[str, t.Any]:
@@ -340,6 +545,8 @@ class KafkaConnectionConfig(ConnectionConfig):
     pre_ping: Literal[False] = False
 
     type_: Literal["kafka"] = Field(alias="type", default="kafka")
+
+    _engine_import_validator = _get_engine_import_validator("confluent_kafka", "kafka")
 
     @property
     def _connection_kwargs_keys(self) -> t.Set[str]:
@@ -377,6 +584,8 @@ class SparkConnectionConfig(ConnectionConfig):
     pre_ping: Literal[False] = False
 
     type_: Literal["spark"] = Field(alias="type", default="spark")
+
+    _engine_import_validator = _get_engine_import_validator("pyspark", "spark")
 
     @property
     def _connection_kwargs_keys(self) -> t.Set[str]:

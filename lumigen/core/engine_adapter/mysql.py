@@ -25,10 +25,11 @@ class MySQLEngineAdapter(
     def _values_to_sql(
         self,
         values: t.List[t.Tuple[t.Any, ...]],
-        columns_to_types: t.Dict[str, exp.DataType],
+        target_columns_to_types: t.Dict[str, exp.DataType],
         batch_start: int,
         batch_end: int,
         alias: str = "t",
+        source_columns: t.Optional[t.List[str]] = None,
     ):
         set_dtype_columns = set()
         nonset_dtype_columns = None
@@ -47,13 +48,14 @@ class MySQLEngineAdapter(
             for idx in set_dtype_columns:
                 converted_value[idx] = ','.join(value[idx])
             values[i] = tuple(converted_value)
-        return super()._values_to_sql(values, columns_to_types, batch_start, batch_end, alias)
+        return super()._values_to_sql(values, target_columns_to_types, batch_start, batch_end, alias, source_columns)
     
     def execute(
         self,
         expressions: t.Union[str, exp.Expression, t.Sequence[exp.Expression]],
         ignore_unsupported_errors: bool = False,
         quote_identifiers: bool = True,
+        track_rows_processed: bool = False,
         **kwargs: t.Any,
     ) -> None:
         for e in ensure_list(expressions):
@@ -75,7 +77,7 @@ class MySQLEngineAdapter(
                     if node.is_type(exp.DataType.Type.BIT):
                         node.replace(node.this)
 
-        super().execute(expressions, ignore_unsupported_errors, quote_identifiers, **kwargs)
+        super().execute(expressions, ignore_unsupported_errors, quote_identifiers, track_rows_processed, **kwargs)
 
     def get_all_data_objects(self, keyword: str="") -> t.List[DataObject]:
         keyword = keyword.strip()

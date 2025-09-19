@@ -39,6 +39,10 @@ class KafkaEngineAdapter(
     EngineAdapterMixin,
 ):
     DIALECT: str = "kafka"
+    SUPPORTS_TRANSACTIONS = True
+    SUPPORTS_TUPLE_IN = False
+    SUPPORTS_REPLACE_TABLE = False
+    SUPPORTS_QUERY_EXECUTION_TRACKING = False
 
     def build_query(
         self,
@@ -146,7 +150,7 @@ class KafkaEngineAdapter(
         self,
         topics: str, # List of topics separated by comma
         df: DataFrameType,
-        **kwargs: t.Any,
+        *args: t.Any, **kwargs: t.Any,
     ) -> None:
         self._truncate_table(topics)
         self.insert_append(topics, df, **kwargs)
@@ -155,7 +159,7 @@ class KafkaEngineAdapter(
         self,
         topics: str, # List of topics separated by comma
         df: DataFrameType,
-        **kwargs: t.Any,
+        *args: t.Any, **kwargs: t.Any,
     ) -> None:
         topic_list = [tn.strip() for tn in topics.split(',')]
         df_case_insens_cols = FallbackSet(df.columns)

@@ -46,15 +46,17 @@ class SparkJDBCEngineAdapter(SparkEngineAdapter):
         super(SparkJDBCEngineAdapter, self).__init__(connection_factory_or_pool, **kwargs)
         self.delegate_adapter = delegate_adapter
         self.dialect = delegate_adapter.dialect
-        self.SCHEMA_DIFFER = delegate_adapter.SCHEMA_DIFFER
+        self.SCHEMA_DIFFER_KWARGS = delegate_adapter.SCHEMA_DIFFER_KWARGS
 
     def replace_query(
         self,
         table_name: TableName,
         query_or_df: QueryOrDF,
-        columns_to_types: t.Optional[t.Dict[str, exp.DataType]] = None,
+        target_columns_to_types: t.Optional[t.Dict[str, exp.DataType]] = None,
         table_description: t.Optional[str] = None,
         column_descriptions: t.Optional[t.Dict[str, str]] = None,
+        source_columns: t.Optional[t.List[str]] = None,
+        supports_replace_table_override: t.Optional[bool] = None,
         **kwargs: t.Any,
     ) -> None:
         """Replaces an existing table with a query.
@@ -64,7 +66,7 @@ class SparkJDBCEngineAdapter(SparkEngineAdapter):
         Args:
             table_name: The name of the table (eg. prod.table)
             query_or_df: The SQL query to run or a dataframe.
-            columns_to_types: Optional a mapping between the column name and its data type.
+            target_columns_to_types: Optional a mapping between the column name and its data type.
             kwargs: Optional create table properties.
         """
         if isinstance(query_or_df, (exp.Query, exp.DerivedTable, str)):
@@ -86,7 +88,9 @@ class SparkJDBCEngineAdapter(SparkEngineAdapter):
         self,
         table_name: TableName,
         query_or_df: QueryOrDF,
-        columns_to_types: t.Optional[t.Dict[str, exp.DataType]] = None,
+        target_columns_to_types: t.Optional[t.Dict[str, exp.DataType]] = None,
+        track_rows_processed: bool = True,
+        source_columns: t.Optional[t.List[str]] = None,
     ) -> None:
         if isinstance(query_or_df, (exp.Query, exp.DerivedTable, str)):
             df = self.fetch_pyspark_df(query_or_df)
@@ -98,7 +102,7 @@ class SparkJDBCEngineAdapter(SparkEngineAdapter):
                                 table_name,
                                 dialect=self.dialect)
             df = self._flatten_complex_types(df)
-            self.execute(insert_exp, df=df)
+            self.execute(insert_exp, df=df, track_rows_processed=track_rows_processed)
         else:
             raise NotImplementedError()
             
@@ -106,13 +110,15 @@ class SparkJDBCEngineAdapter(SparkEngineAdapter):
         self,
         target_table: TableName,
         source_table: QueryOrDF,
-        columns_to_types: t.Optional[t.Dict[str, exp.DataType]],
+        target_columns_to_types: t.Optional[t.Dict[str, exp.DataType]],
         unique_key: t.Sequence[exp.Expression],
         when_matched: t.Optional[exp.Whens] = None,
         merge_filter: t.Optional[exp.Expression] = None,
+        source_columns: t.Optional[t.List[str]] = None,
+        **kwargs: t.Any,
     ) -> None:
         if not self.table_exists(target_table):
-            return self.insert_append(target_table, source_table, columns_to_types)
+            return self.insert_append(target_table, source_table, target_columns_to_types, source_columns=source_columns)
 
         if isinstance(source_table, (exp.Query, exp.DerivedTable, str)):
             df = self.fetch_pyspark_df(source_table)
@@ -129,13 +135,13 @@ class SparkJDBCEngineAdapter(SparkEngineAdapter):
             temp_table_exp = exp.to_table(temp_table_name, db=target_table_exp.args.get("db"), catalog=target_table_exp.args.get("catalog"))
             try:
                 # Stage the data frame into a temp table in the target DB
-                self.replace_query(temp_table_exp, df, columns_to_types=columns_to_types)
+                self.replace_query(temp_table_exp, df, target_columns_to_types=target_columns_to_types, source_columns=source_columns)
 
                 # Delegate MERGE operation to corresponding engine adapter, using the temp table as the source
                 self.delegate_adapter.merge(
                     target_table,
                     exp.select("*").from_(temp_table_exp),
-                    columns_to_types, unique_key, when_matched, merge_filter,
+                    target_columns_to_types, unique_key, when_matched, merge_filter, source_columns, **kwargs
                 )
             finally:
                 # Cleanup: Always drop the temp table
@@ -147,7 +153,7 @@ class SparkJDBCEngineAdapter(SparkEngineAdapter):
 
                 # Delegate MERGE operation to corresponding engine adapter at the cost of collecting all the rows from PySpark DataFrame.
                 df = DataFrameConverter.to_pandas(df)
-                self.delegate_adapter.merge(target_table, df, columns_to_types, unique_key, when_matched, merge_filter)
+                self.delegate_adapter.merge(target_table, df, target_columns_to_types, unique_key, when_matched, merge_filter, source_columns, **kwargs)
 
                 end_time = time.time()
                 duration = end_time - start_time
@@ -165,9 +171,10 @@ class SparkJDBCEngineAdapter(SparkEngineAdapter):
         name: TableName | SchemaName,
         exists: bool = True,
         kind: str = "TABLE",
+        cascade: bool = False,
         **drop_args: t.Any,
     ) -> None:
-        self.delegate_adapter._drop_object(name, exists, kind, **drop_args)
+        self.delegate_adapter._drop_object(name, exists, kind, cascade, **drop_args)
             
     def _create_schema(
         self,

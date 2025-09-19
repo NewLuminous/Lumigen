@@ -29,10 +29,10 @@ class FakeEngineAdapter(QueryBuilderMixin, FetchBatchMixin, EngineAdapterMixin):
     ) -> pyspark.sql.DataFrame:
         return DataFrameConverter.to_spark(self.fetchdf(query), SQLContextManager().get_spark_session())
     
-    def replace_query(self, table_name, df: DataFrameType, **kwargs: t.Any) -> None:
+    def replace_query(self, table_name, df: DataFrameType, *args: t.Any, **kwargs: t.Any) -> None:
         self.insert_append(table_name, df)
 
-    def insert_append(self, table_name, df: DataFrameType, **kwargs: t.Any) -> None:
+    def insert_append(self, table_name, df: DataFrameType, *args: t.Any, **kwargs: t.Any) -> None:
         conn = t.cast("ConsoleConfig", self.connection)
         if not conn.print_data:
             return

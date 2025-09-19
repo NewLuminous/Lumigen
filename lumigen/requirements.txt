@@ -11,4 +11,4 @@ pymssql>=2.3.2
 pymysql>=1.1.1
 pyspark==3.3.3
 python-dotenv>=1.0.1
-sqlmesh==0.183.0
+sqlmesh==0.220.2
