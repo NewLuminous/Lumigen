@@ -3,7 +3,7 @@
 import typing as t
 
 from sqlglot import exp
-import sqlmesh
+from sqlmesh.core.engine_adapter.mssql import MSSQLEngineAdapter as SQLMeshMSSQLEngineAdapter
 from sqlmesh.core.engine_adapter.shared import (
     DataObject,
     DataObjectType,
@@ -15,7 +15,7 @@ from core.engine_adapter.mixins import EngineAdapterMixin, FetchBatchMixin
 class MSSQLEngineAdapter(
     FetchBatchMixin,
     EngineAdapterMixin,
-    sqlmesh.core.engine_adapter.mssql.MSSQLEngineAdapter,
+    SQLMeshMSSQLEngineAdapter,
 ):
     def _convert_df_datetime(self, df, columns_to_types: t.Dict[str, exp.DataType]) -> None:
         super()._convert_df_datetime(df, columns_to_types)

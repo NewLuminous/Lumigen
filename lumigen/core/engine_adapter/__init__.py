@@ -7,13 +7,13 @@ from sqlmesh.core.engine_adapter.base import (
     EngineAdapterWithIndexSupport,
 )
 from sqlmesh.core.engine_adapter.bigquery import BigQueryEngineAdapter
-from sqlmesh.core.engine_adapter.clickhouse import ClickhouseEngineAdapter
 from sqlmesh.core.engine_adapter.databricks import DatabricksEngineAdapter
 from sqlmesh.core.engine_adapter.duckdb import DuckDBEngineAdapter
 from sqlmesh.core.engine_adapter.redshift import RedshiftEngineAdapter
 from sqlmesh.core.engine_adapter.snowflake import SnowflakeEngineAdapter
 from sqlmesh.core.engine_adapter.trino import TrinoEngineAdapter
 from sqlmesh.core.engine_adapter.athena import AthenaEngineAdapter
+from core.engine_adapter.clickhouse import ClickHouseEngineAdapter
 from core.engine_adapter.oracle import OracleEngineAdapter
 from core.engine_adapter.postgres import PostgresEngineAdapter
 from core.engine_adapter.mysql import MySQLEngineAdapter
@@ -27,7 +27,7 @@ DIALECT_TO_ENGINE_ADAPTER = {
     "hive": SparkEngineAdapter,
     "spark": SparkEngineAdapter,
     "bigquery": BigQueryEngineAdapter,
-    "clickhouse": ClickhouseEngineAdapter,
+    "clickhouse": ClickHouseEngineAdapter,
     "duckdb": DuckDBEngineAdapter,
     "snowflake": SnowflakeEngineAdapter,
     "databricks": DatabricksEngineAdapter,

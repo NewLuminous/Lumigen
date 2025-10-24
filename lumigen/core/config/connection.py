@@ -195,6 +195,146 @@ class ConnectionConfig(abc.ABC, BaseConfig):
         return addr_str if addr_str else None
 
 
+class ClickHouseConnectionConfig(ConnectionConfig):
+    """
+    ClickHouse Connection Configuration.
+
+    Property reference: https://clickhouse.com/docs/en/integrations/python#client-initialization
+    """
+
+    host: str
+    username: str
+    password: t.Optional[str] = None
+    port: t.Optional[int] = None
+    cluster: t.Optional[str] = None
+    connect_timeout: int = 10
+    send_receive_timeout: int = 300
+    query_limit: int = 0
+    use_compression: bool = True
+    compression_method: t.Optional[str] = None
+    connection_settings: t.Optional[t.Dict[str, t.Any]] = None
+    http_proxy: t.Optional[str] = None
+    # HTTPS/TLS settings
+    verify: bool = True
+    ca_cert: t.Optional[str] = None
+    client_cert: t.Optional[str] = None
+    client_cert_key: t.Optional[str] = None
+    https_proxy: t.Optional[str] = None
+    server_host_name: t.Optional[str] = None
+    tls_mode: t.Optional[str] = None
+
+    concurrent_tasks: int = 1
+    register_comments: bool = False
+    pre_ping: bool = False
+
+    # This object expects options from urllib3 and also from clickhouse-connect
+    # See:
+    # * https://urllib3.readthedocs.io/en/stable/advanced-usage.html
+    # * https://clickhouse.com/docs/en/integrations/python#customizing-the-http-connection-pool
+    connection_pool_options: t.Optional[t.Dict[str, t.Any]] = None
+
+    type_: t.Literal["clickhouse"] = Field(alias="type", default="clickhouse")
+
+    _engine_import_validator = _get_engine_import_validator("clickhouse_connect", "clickhouse")
+
+    @property
+    def _connection_kwargs_keys(self) -> t.Set[str]:
+        kwargs = {
+            "host",
+            "username",
+            "port",
+            "password",
+            "connect_timeout",
+            "send_receive_timeout",
+            "query_limit",
+            "http_proxy",
+            "verify",
+            "ca_cert",
+            "client_cert",
+            "client_cert_key",
+            "https_proxy",
+            "server_host_name",
+            "tls_mode",
+        }
+        return kwargs
+
+    @property
+    def _engine_adapter(self) -> t.Type[EngineAdapter]:
+        return engine_adapter.ClickHouseEngineAdapter
+
+    @property
+    def _connection_factory(self) -> t.Callable:
+        from clickhouse_connect.dbapi import connect  # type: ignore
+        from clickhouse_connect.driver import httputil  # type: ignore
+        from functools import partial
+
+        pool_manager_options: t.Dict[str, t.Any] = dict(
+            # Match the maxsize to the number of concurrent tasks
+            maxsize=self.concurrent_tasks,
+            # Block if there are no free connections
+            block=True,
+            verify=self.verify,
+            ca_cert=self.ca_cert,
+            client_cert=self.client_cert,
+            client_cert_key=self.client_cert_key,
+            https_proxy=self.https_proxy,
+        )
+        # this doesn't happen automatically because we always supply our own pool manager to the connection
+        # https://github.com/ClickHouse/clickhouse-connect/blob/3a7f4b04cad29c7c2536661b831fb744248e2ec0/clickhouse_connect/driver/httpclient.py#L109
+        if self.server_host_name:
+            pool_manager_options["server_hostname"] = self.server_host_name
+            if self.verify:
+                pool_manager_options["assert_hostname"] = self.server_host_name
+        if self.connection_pool_options:
+            pool_manager_options.update(self.connection_pool_options)
+        pool_mgr = httputil.get_pool_manager(**pool_manager_options)
+
+        return partial(connect, pool_mgr=pool_mgr)
+
+    @property
+    def cloud_mode(self) -> bool:
+        return "clickhouse.cloud" in self.host
+
+    @property
+    def _extra_engine_config(self) -> t.Dict[str, t.Any]:
+        return {"cluster": self.cluster, "cloud_mode": self.cloud_mode}
+
+    @property
+    def _static_connection_kwargs(self) -> t.Dict[str, t.Any]:
+        # False = no compression
+        # True = Clickhouse default compression method
+        # string = specific compression method
+        compress: bool | str = self.use_compression
+        if compress and self.compression_method:
+            compress = self.compression_method
+
+        # Clickhouse system settings passed to connection
+        # https://clickhouse.com/docs/en/operations/settings/settings
+        # - below are set to align with dbt-clickhouse
+        # - https://github.com/ClickHouse/dbt-clickhouse/blob/44d26308ea6a3c8ead25c280164aa88191f05f47/dbt/adapters/clickhouse/dbclient.py#L77
+        settings = self.connection_settings or {}
+        #  mutations_sync = 2: "The query waits for all mutations [ALTER statements] to complete on all replicas (if they exist)"
+        settings["mutations_sync"] = "2"
+        #  insert_distributed_sync = 1: "INSERT operation succeeds only after all the data is saved on all shards"
+        settings["insert_distributed_sync"] = "1"
+        if self.cluster or self.cloud_mode:
+            # database_replicated_enforce_synchronous_settings = 1:
+            #   - "Enforces synchronous waiting for some queries"
+            #   - https://github.com/ClickHouse/ClickHouse/blob/ccaa8d03a9351efc16625340268b9caffa8a22ba/src/Core/Settings.h#L709
+            settings["database_replicated_enforce_synchronous_settings"] = "1"
+            # insert_quorum = auto:
+            #   - "INSERT succeeds only when ClickHouse manages to correctly write data to the insert_quorum of replicas during
+            #       the insert_quorum_timeout"
+            #   - "use majority number (number_of_replicas / 2 + 1) as quorum number"
+            settings["insert_quorum"] = "auto"
+
+        return {
+            "compress": compress,
+            "client_name": f"Lumigen",
+            **settings,
+        }
+
+
 class OracleConnectionConfig(ConnectionConfig):
     host: str
     user: str

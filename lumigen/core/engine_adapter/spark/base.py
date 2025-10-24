@@ -4,7 +4,7 @@ import typing as t
 
 import logging
 
-import sqlmesh
+from sqlmesh.core.engine_adapter.spark import SparkEngineAdapter as SQLMeshSparkEngineAdapter
 from sqlmesh.core.engine_adapter.shared import (
     set_catalog,
     DataObject,
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 @set_catalog()
 class SparkEngineAdapter(
     EngineAdapterMixin,
-    sqlmesh.core.engine_adapter.SparkEngineAdapter,
+    SQLMeshSparkEngineAdapter,
 ):
     def wap_supported(self, table_name: TableName) -> bool:
         # Disable WAP to prevent dummy inserting when _create_table

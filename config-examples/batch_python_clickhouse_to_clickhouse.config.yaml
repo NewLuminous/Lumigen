@@ -1,0 +1,19 @@
+source:
+  type: clickhouse
+  host: 10.100.21.122
+  port: 8123
+  username: default
+  password: ********
+
+sink:
+  type: clickhouse
+  host: 10.100.21.122
+  port: 8123
+  username: default
+  password: ********
+
+job_properties:
+  source_table: default.trips
+  source_batch_size: 10000
+  sink_table: nyc_taxi.trips
+  data_save_mode: OVERWRITE

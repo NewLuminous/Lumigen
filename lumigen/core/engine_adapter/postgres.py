@@ -4,7 +4,7 @@ import typing as t
 
 from sqlglot import exp
 from sqlglot.helper import ensure_list
-import sqlmesh
+from sqlmesh.core.engine_adapter.postgres import PostgresEngineAdapter as SQLMeshPostgresEngineAdapter
 from sqlmesh.core.engine_adapter.shared import (
     DataObject,
     DataObjectType,
@@ -16,7 +16,7 @@ from core.engine_adapter.mixins import EngineAdapterMixin, FetchBatchMixin
 class PostgresEngineAdapter(
     FetchBatchMixin,
     EngineAdapterMixin,
-    sqlmesh.core.engine_adapter.postgres.PostgresEngineAdapter,
+    SQLMeshPostgresEngineAdapter,
 ):
     def execute(
         self,

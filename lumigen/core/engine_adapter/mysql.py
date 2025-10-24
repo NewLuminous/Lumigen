@@ -4,7 +4,7 @@ import typing as t
 
 from sqlglot import exp
 from sqlglot.helper import ensure_list
-import sqlmesh
+from sqlmesh.core.engine_adapter.mysql import MySQLEngineAdapter as SQLMeshMySQLEngineAdapter
 from sqlmesh.core.engine_adapter.shared import (
     DataObject,
     DataObjectType,
@@ -16,7 +16,7 @@ from core.engine_adapter.mixins import EngineAdapterMixin, FetchBatchMixin
 class MySQLEngineAdapter(
     FetchBatchMixin,
     EngineAdapterMixin,
-    sqlmesh.core.engine_adapter.mysql.MySQLEngineAdapter,
+    SQLMeshMySQLEngineAdapter,
 ):
     """
     Temporary fix:
@@ -71,7 +71,7 @@ class MySQLEngineAdapter(
                     except:
                         pass
                     if need_convert_to_binary:
-                        node.args["to"] = exp.DataType.build("binary")
+                        node.set("to", exp.DataType.build("binary"))
 
                     # Cast to BIT will not work
                     if node.is_type(exp.DataType.Type.BIT):

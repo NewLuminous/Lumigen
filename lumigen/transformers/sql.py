@@ -26,13 +26,14 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
         return None
 
     @staticmethod
-    def parse_and_validate_query(query: str, source: EngineAdapter, **kwargs) -> exp.Select:
+    def parse_and_validate_query(query: str, source: EngineAdapter, fallback_dialect: t.Optional[str] = Dialects.SPARK, **kwargs) -> exp.Select:
         # --- Validation and Parsing Logic ---
         try:
+            # Assuming users would more likely try to use source dialect
             select_exp = parse_one(query, dialect=source.dialect, into=exp.Select)
         except:
             try:
-                select_exp = parse_one(query, dialect=Dialects.SPARK, into=exp.Select)
+                select_exp = parse_one(query, dialect=fallback_dialect, into=exp.Select)
             except ParseError as e:
                 err_msg = str(e)
                 if err_msg.startswith("Failed ") and "'" in err_msg:
@@ -167,7 +168,7 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
         **kwargs
     ) -> t.Tuple[str, t.Dict]:
         """Parses the SQL, validates it, and rewrites it to use temporary views."""
-        select_exp = SQL.parse_and_validate_query(query, source, **kwargs)
+        select_exp = SQL.parse_and_validate_query(query, source, fallback_dialect=Dialects.DUCKDB, **kwargs)
         origin2tmp, origin2fetch_query = SQL._rewrite_query_using_temp_views(select_exp, source, is_global_temp=False)
             
         # --- Temp Table Creation and Query Rewriting Logic ---

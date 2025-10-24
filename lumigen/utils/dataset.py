@@ -3,6 +3,7 @@ import typing as t
 
 from collections import defaultdict, OrderedDict
 from functools import singledispatch
+import datetime
 import numpy as np
 import pandas as pd
 import pyspark.sql
@@ -94,6 +95,8 @@ class DataFrameConverter:
 _TYPE_MAPPINGS = {
     str: exp.DataType.build("text"),
     bytes: exp.DataType.build("binary"),
+    datetime.date: exp.DataType.build("date"),
+    datetime.datetime: exp.DataType.build("timestamp"),
     list: exp.DataType.build("array"),
     dict: exp.DataType.build("map"),
     np.dtypes.Int8DType: exp.DataType.build("tinyint"),

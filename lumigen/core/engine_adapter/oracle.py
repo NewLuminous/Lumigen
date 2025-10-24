@@ -6,7 +6,6 @@ import typing as t
 
 from sqlglot import exp
 from sqlglot.errors import ParseError
-import numpy as np
 import pandas as pd
 
 from sqlmesh.core.dialect import add_table, to_schema
@@ -23,9 +22,7 @@ from sqlmesh.core.engine_adapter.shared import (
     DataObjectType,
     SourceQuery,
     InsertOverwriteStrategy,
-    set_catalog,
 )
-from sqlmesh.core.schema_diff import SchemaDiffer
 
 if t.TYPE_CHECKING:
     from core._typing import SchemaName, TableName
@@ -35,14 +32,13 @@ from core.engine_adapter.mixins import EngineAdapterMixin, FetchBatchMixin
 from utils.dataset import columns_to_types_from_df, DataFrameConverter
 
 
-@set_catalog()
 class OracleEngineAdapter(
     NonTransactionalTruncateMixin,
     PandasNativeFetchDFSupportMixin,
-    FetchBatchMixin,
     RowDiffMixin,
-    EngineAdapterWithIndexSupport,
+    FetchBatchMixin,
     EngineAdapterMixin,
+    EngineAdapterWithIndexSupport,
 ):
     DIALECT: str = "oracle"
     SUPPORTS_TRANSACTIONS = True
