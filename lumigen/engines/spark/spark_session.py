@@ -82,11 +82,8 @@ class SparkSessionConnection:
     def set_current_catalog(self, catalog_name: str) -> None:
         if self._spark_major_minor >= (3, 4):
             return self.spark.catalog.setCurrentCatalog(catalog_name)
-        current_catalog = self.get_current_catalog()
-        if current_catalog != catalog_name:
-            logger.warning(
-                "Spark <3.4 does not support certain cross catalog queries since the default catalog cannot be set <3.4"
-            )
+        else:
+            self.spark.sql(f"SET CATALOG {self.catalog}")
 
     def cursor(self) -> SparkSessionCursor:
         try:

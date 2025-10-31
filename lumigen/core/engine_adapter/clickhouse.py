@@ -7,12 +7,15 @@ from sqlmesh.core.engine_adapter.clickhouse import ClickhouseEngineAdapter as SQ
 from sqlmesh.core.engine_adapter.shared import (
     DataObject,
     DataObjectType,
+    SourceQuery,
 )
 
 if t.TYPE_CHECKING:
     from sqlmesh.core._typing import TableName
+    from sqlmesh.core.engine_adapter._typing import DF
 
 from core.engine_adapter.mixins import EngineAdapterMixin, FetchBatchMixin
+from utils.dataset import columns_to_types_from_df
 
 
 class ClickHouseEngineAdapter(
@@ -20,6 +23,24 @@ class ClickHouseEngineAdapter(
     EngineAdapterMixin,
     SQLMeshClickhouseEngineAdapter,
 ):
+    def _df_to_source_queries(
+        self,
+        df: DF,
+        target_columns_to_types: t.Dict[str, exp.DataType],
+        batch_size: int,
+        target_table: TableName,
+        source_columns: t.Optional[t.List[str]] = None,
+        **kwargs: t.Any,
+    ) -> t.List[SourceQuery]:
+        # Fix issue where clickhouse-connect tries to encode string column when writing
+        # but it does not work with bytearray.
+        df_columns_to_types = columns_to_types_from_df(df)
+        for col in df_columns_to_types:
+            if df_columns_to_types[col].is_type(exp.DataType.Type.BINARY):
+                df[col] = df[col].map(bytes, na_action="ignore")
+
+        return super()._df_to_source_queries(df, target_columns_to_types, batch_size, target_table, source_columns=source_columns, **kwargs)
+
     def _create_table(
         self,
         table_name_or_schema: t.Union[exp.Schema, TableName],

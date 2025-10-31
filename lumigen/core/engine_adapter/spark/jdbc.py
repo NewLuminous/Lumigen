@@ -7,7 +7,6 @@ import time
 import pyspark.sql
 from sqlglot import exp, insert
 
-from sqlmesh.core.engine_adapter.shared import set_catalog
 from sqlmesh.utils import random_id
 
 if t.TYPE_CHECKING:
@@ -22,7 +21,6 @@ from core.engine_adapter.spark.base import SparkEngineAdapter
 logger = logging.getLogger(__name__)
 
 
-@set_catalog()
 class SparkJDBCEngineAdapter(SparkEngineAdapter):
     SUPPORTS_REPLACE_TABLE = True
 

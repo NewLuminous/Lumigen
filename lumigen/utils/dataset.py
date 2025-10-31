@@ -95,6 +95,7 @@ class DataFrameConverter:
 _TYPE_MAPPINGS = {
     str: exp.DataType.build("text"),
     bytes: exp.DataType.build("binary"),
+    bytearray: exp.DataType.build("binary"),
     datetime.date: exp.DataType.build("date"),
     datetime.datetime: exp.DataType.build("timestamp"),
     list: exp.DataType.build("array"),

@@ -20,7 +20,7 @@ from core.engine_adapter.mysql import MySQLEngineAdapter
 from core.engine_adapter.mssql import MSSQLEngineAdapter
 from core.engine_adapter.kafka import KafkaEngineAdapter
 from core.engine_adapter.spark import (
-    SparkEngineAdapter, SparkJDBCEngineAdapter, SparkKafkaEngineAdapter,
+    SparkEngineAdapter, SparkClickHouseEngineAdapter, SparkJDBCEngineAdapter, SparkKafkaEngineAdapter,
 )
 
 DIALECT_TO_ENGINE_ADAPTER = {

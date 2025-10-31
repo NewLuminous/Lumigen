@@ -2,6 +2,7 @@ source:
   type: clickhouse
   host: 10.100.21.122
   port: 8123
+  database: default
   username: default
   password: ********
 
@@ -9,6 +10,7 @@ sink:
   type: clickhouse
   host: 10.100.21.122
   port: 8123
+  database: default
   username: default
   password: ********
 

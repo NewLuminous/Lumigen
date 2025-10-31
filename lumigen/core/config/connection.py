@@ -206,6 +206,7 @@ class ClickHouseConnectionConfig(ConnectionConfig):
     username: str
     password: t.Optional[str] = None
     port: t.Optional[int] = None
+    database: t.Optional[str] = None
     cluster: t.Optional[str] = None
     connect_timeout: int = 10
     send_receive_timeout: int = 300
@@ -244,6 +245,7 @@ class ClickHouseConnectionConfig(ConnectionConfig):
             "username",
             "port",
             "password",
+            "database",
             "connect_timeout",
             "send_receive_timeout",
             "query_limit",

@@ -3,10 +3,6 @@ import typing as t
 import logging
 import json
 
-from sqlmesh.core.engine_adapter.shared import (
-    set_catalog,
-)
-
 if t.TYPE_CHECKING:
     from core._typing import DataFrameType
     from engines.spark.spark_kafka import SparkKafkaCursor
@@ -19,7 +15,6 @@ from utils.errors import UnsupportedOperationError, MissingColumnError
 logger = logging.getLogger(__name__)
 
 
-@set_catalog()
 class SparkKafkaEngineAdapter(SparkEngineAdapter, KafkaEngineAdapter):
     SUPPORTS_REPLACE_TABLE = True
 
