@@ -184,7 +184,7 @@ class PreviewRunner:
             tbl_col_name = dest_col_set.get(df_col_name)
             if tbl_col_name in destination_columns:
                 tbl_col_dtype = destination_columns[tbl_col_name]
-                is_type_compatible = writer.SCHEMA_DIFFER._is_compatible_type(df_col_dtype, tbl_col_dtype)
+                is_type_compatible = writer.schema_differ._is_compatible_type(df_col_dtype, tbl_col_dtype)
                 if is_type_compatible:
                     mapping_status = "MATCHED_TYPE_COMPATIBLE"
                     notes = f"Source {df_col_dtype} is compatible with destination {tbl_col_dtype}."
