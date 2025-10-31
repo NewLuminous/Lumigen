@@ -1,6 +1,6 @@
 source:
   type: clickhouse
-  host: 10.100.21.122
+  host: localhost
   port: 8123
   database: default
   username: default
@@ -8,7 +8,7 @@ source:
 
 sink:
   type: clickhouse
-  host: 10.100.21.122
+  host: localhost
   port: 8123
   database: default
   username: default
