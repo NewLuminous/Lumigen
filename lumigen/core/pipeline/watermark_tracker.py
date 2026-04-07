@@ -8,7 +8,7 @@ from pyspark.storagelevel import StorageLevel
 if t.TYPE_CHECKING:
     from core.job_context import JobContext
 
-from core.config.job import JobMode
+from core.config.job import JobMode, DataSaveMode
 from core.engine_adapter.mixins import WatermarkStrategyMixin
 from transformers.streaming import ForeachBatch
 from utils import FallbackSet
@@ -78,16 +78,26 @@ class WatermarkTracker(ForeachBatch):
                 if high_watermark_max_in_batch and self.high_watermark_max and high_watermark_max_in_batch <= self.high_watermark_max:
                     high_watermark_max_in_batch = None
 
-            # Step 2: Perform state update and data processing within a single transaction.
-            # This guarantees that if the downstream pipeline fails, the watermark is NOT advanced.
-            with self.audit_manager.adapter.transaction():
+            # Step 2: Perform state update and data processing.
+            # We guarantee atomicity (using a transaction) for APPEND mode to ensure the watermark is not advanced if the downstream pipeline fails.
+            # For other modes (like MERGE), we avoid a long-running transaction to prevent holding too many connection locks during expensive operations.
+            if self.job_props.data_save_mode == DataSaveMode.APPEND:
+                with self.audit_manager.adapter.transaction():
+                    if high_watermark_max_in_batch is not None:
+                        self.audit_manager.update_high_watermark(self.context, high_watermark_max_in_batch, self.watermark_exists)
+                        # Update in-memory state for the next batch in this run.
+                        self.high_watermark_max = high_watermark_max_in_batch
+
+                    # Apply all downstream transformations (including the sink write).
+                    ret = self._apply_callbacks(df)
+            else:
+                # Apply transformations first
+                ret = self._apply_callbacks(df)
+                
+                # Then update the watermark without a transaction block
                 if high_watermark_max_in_batch is not None:
                     self.audit_manager.update_high_watermark(self.context, high_watermark_max_in_batch, self.watermark_exists)
-                    # Update in-memory state for the next batch in this run.
                     self.high_watermark_max = high_watermark_max_in_batch
-
-                # Step 3: Apply all downstream transformations (including the sink write).
-                ret = self._apply_callbacks(df)
             
             if high_watermark_max_in_batch is not None and self.job_props.job_id:
                 logger.info(f"Successfully updated state for job_id '{self.job_props.job_id}' with watermark '{high_watermark_max_in_batch}'.")

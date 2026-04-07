@@ -25,37 +25,40 @@ class DebeziumParser(AbstractTransformerDecorator):
 
         Returns
         -------
-        A data frame with three columns `data`, `op`, `ts_ms`
+        A data frame with three columns `data`, `op`, `timestamp`
         """
         df = super().transform(df, *args, **kwargs)
 
         df = self.inline(df)
         if isinstance(df, pyspark.sql.DataFrame):
             df = df.withColumn("data",
-                when((col("op")=='c') & (col("after").isNotNull()), col("after"))
-                .when((col("op")=='r') & (col("after").isNotNull()), col("after"))
-                .when((col("op")=='u') & (col("after").isNotNull()), col("after"))
-                .when((col("op")=='d') & (col("before").isNotNull()), col("before"))
+                when(col("op")=='c', col("after"))
+                .when(col("op")=='r', col("after"))
+                .when(col("op")=='u', col("after"))
+                .when(col("op")=='d', col("before"))
+                .when(col("op")=='t', col("before"))
                 .otherwise(None)
             )
-            df = df.withColumn("ts_ms",
+            df = df.withColumn("timestamp",
                 when(col("ts_ns").isNotNull(), col("ts_ns")/1_000_000_000)
                 .when(col("ts_us").isNotNull(), col("ts_us")/1_000_000)
                 .otherwise(col("ts_ms")/1_000)
                 .cast("timestamp")
             )
-            df = df.select("data", "op", "ts_ms")
+            df = df.select("data", "op", "timestamp")
         elif isinstance(df, pd.DataFrame):
             conditions = [
-                (df["op"] == 'c') & (df["after"].notnull()),
-                (df["op"] == 'r') & (df["after"].notnull()),
-                (df["op"] == 'u') & (df["after"].notnull()),
-                (df["op"] == 'd') & (df["before"].notnull())
+                (df["op"] == 'c'),
+                (df["op"] == 'r'),
+                (df["op"] == 'u'),
+                (df["op"] == 'd'),
+                (df["op"] == 't')
             ]
             values = [
                 df["after"],
                 df["after"],
                 df["after"],
+                df["before"],
                 df["before"]
             ]
             df["data"] = np.select(conditions, values, default=None)
@@ -68,10 +71,10 @@ class DebeziumParser(AbstractTransformerDecorator):
                 df["ts_ns"] / 1_000_000_000,    # ts_ns to seconds
                 df["ts_us"] / 1_000_000         # ts_us to seconds
             ]
-            df["ts_ms"] = np.select(ts_conditions, ts_values, default=df["ts_ms"] / 1000)
-            df["ts_ms"] = pd.to_datetime(df["ts_ms"], unit='s')
+            df["timestamp"] = np.select(ts_conditions, ts_values, default=df["ts_ms"] / 1000)
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit='s')
 
-            df = df[["data", "op", "ts_ms"]]
+            df = df[["data", "op", "timestamp"]]
         else:
             raise UnsupportedDataFrameError(f"DataFrame type `{type(df).__name__}` not supported.")
 
@@ -126,7 +129,7 @@ class DebeziumParser(AbstractTransformerDecorator):
     
 
 class CDCDeduplicator(AbstractTransformerDecorator):
-    def transform(self, df: DataFrameType, key: t.List[str], priority: t.Optional[str]="ts_ms", *args, **kwargs):
+    def transform(self, df: DataFrameType, key: t.List[str], priority: t.Optional[str]="timestamp", *args, **kwargs):
         """
         Parameters
         ----------
@@ -150,7 +153,6 @@ class CDCDeduplicator(AbstractTransformerDecorator):
             df = df.withColumn("rownum", row_number().over(w))
             df = df.filter("rownum = 1")
             df = df.drop("rownum")
-            df = df.filter(col("op").isin(['d', 'u', 'c'])) # TODO
         elif isinstance(df, pd.DataFrame):
             df["op_priority"] = np.select(
                 [df["op"] == 't', df["op"] == 'd', df["op"] == 'u', df["op"] == 'c'],
@@ -161,7 +163,6 @@ class CDCDeduplicator(AbstractTransformerDecorator):
             
             df = df[df["rownum"] == 1]
             df = df.drop(columns=["op_priority", "rownum"])
-            df = df[df["op"].isin(['d', 'u', 'c'])] # TODO
         else:
             raise UnsupportedDataFrameError(f"DataFrame type `{type(df).__name__}` not supported.")
 

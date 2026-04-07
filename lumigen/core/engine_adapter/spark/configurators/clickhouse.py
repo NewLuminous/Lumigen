@@ -23,7 +23,7 @@ class SparkClickHouseConfigurator(SparkAdapterConfigurator):
         if external_db_config.type_ != "clickhouse":
             return None
 
-        catalog = external_db_config.type_
+        catalog = f"{external_db_config.type_}{id(external_db_config)}"
         interface = "https" if external_db_config.port in {8443, 443} else "http"
         
         spark: SparkSession = spark_config._static_connection_kwargs.get("spark")

@@ -7,12 +7,16 @@ import time
 import pyspark.sql
 from sqlglot import exp, insert
 
+from sqlmesh.core.engine_adapter.shared import (
+    SourceQuery,
+    InsertOverwriteStrategy,
+)
 from sqlmesh.utils import random_id
 
 if t.TYPE_CHECKING:
     from core._typing import SchemaName, TableName
     from sqlmesh.core.engine_adapter import EngineAdapter
-    from sqlmesh.core.engine_adapter.base import QueryOrDF
+    from sqlmesh.core.engine_adapter.base import QueryOrDF, DF
     from sqlmesh.utils.connection_pool import ConnectionPool
 
 from utils.dataset import DataFrameConverter
@@ -103,6 +107,26 @@ class SparkJDBCEngineAdapter(SparkEngineAdapter):
             self.execute(insert_exp, df=df, track_rows_processed=track_rows_processed)
         else:
             raise NotImplementedError()
+        
+    def _insert_overwrite_by_condition(
+        self,
+        table_name: TableName,
+        source_queries_or_df: t.Union[t.List[SourceQuery], DF],
+        target_columns_to_types: t.Optional[t.Dict[str, exp.DataType]] = None,
+        where: t.Optional[exp.Condition] = None,
+        insert_overwrite_strategy_override: t.Optional[InsertOverwriteStrategy] = None,
+        **kwargs: t.Any,
+    ) -> None:
+        if isinstance(source_queries_or_df, list):
+            return super()._insert_overwrite_by_condition(table_name, source_queries_or_df, target_columns_to_types, where, insert_overwrite_strategy_override, **kwargs)
+        else:
+            df = source_queries_or_df
+
+        if where is None or not self.table_exists(table_name):
+            self.replace_query(table_name, df, target_columns_to_types, **kwargs)
+        else:
+            self.delegate_adapter.delete_from(table_name, where)
+            self.insert_append(table_name, df, target_columns_to_types)
             
     def merge(
         self,
