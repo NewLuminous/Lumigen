@@ -858,7 +858,7 @@ def parse_connection_config(v: t.Dict[str, t.Any]) -> ConnectionConfig | SeaTunn
         raise ConfigError("Missing connection type.")
 
     # Normalize keys
-    v = {key.replace('.', '_'): value for key, value in v.items()}
+    v = {key.replace('.', '_').replace('-', '_'): value for key, value in v.items()}
 
     connection_type = v["type"]
     if connection_type not in CONNECTION_CONFIG_TO_TYPE:

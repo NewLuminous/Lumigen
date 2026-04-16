@@ -1,7 +1,7 @@
 # Lumigen: Declarative ETL Framework
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Python Version](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
 **Lumigen is a powerful, configuration-driven ETL framework designed to simplify and accelerate data pipeline development. Define your entire data flow—from source to sink—in a single, expressive YAML file and let Lumigen handle the execution.**
 
@@ -74,7 +74,7 @@ job_properties:
 
 ### Prerequisites
 
-*   Python 3.9+
+*   Python 3.10+
 *   An execution engine environment configured (e.g., local Python with Pandas, or access to a Spark cluster with `SPARK_HOME` set).
 *   For SeaTunnel, `SEATUNNEL_HOME` must be set.
 *   For Kafka Connectivity: `librdkafka`
@@ -94,7 +94,7 @@ job_properties:
 2.  **(Recommended) Create and Activate a Virtual Environment**
     A virtual environment keeps your project's dependencies isolated.
     ```bash
-    python3.9 -m venv venv
+    python3.10 -m venv venv
     source venv/bin/activate
     ```
 

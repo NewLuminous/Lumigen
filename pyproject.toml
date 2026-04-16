@@ -5,7 +5,7 @@ description = "A powerful, configuration-driven ETL framework to simplify and ac
 readme = "README.md"
 authors = [{ name="NewLuminous" }]
 license = { file="LICENSE" }
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "confluent-kafka==2.6.1",
     "Faker>=33.3.0",
@@ -16,6 +16,7 @@ dependencies = [
     "pyarrow>=18.1.0",
     "pydantic-settings>=2.10.1",
     "pyhocon>=0.3.61",
+    "pyiceberg[pyiceberg-core,s3fs,hive]>=0.11.1",
     "pymssql>=2.3.2",
     "pymysql>=1.1.1",
     "pyspark==3.3.3",
