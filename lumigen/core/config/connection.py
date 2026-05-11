@@ -681,6 +681,7 @@ class IcebergConnectionConfig(ConnectionConfig):
     warehouse: t.Optional[str] = None
     uri: t.Optional[str] = None
     catalog_properties: t.Optional[t.Dict[str, t.Any]] = {}
+    hadoop_config: t.Optional[t.Dict[str, t.Any]] = {}
     connect_timeout: int = 10
 
     concurrent_tasks: int = 4
@@ -698,6 +699,7 @@ class IcebergConnectionConfig(ConnectionConfig):
             "warehouse",
             "uri",
             "catalog_properties",
+            "hadoop_config",
             "connect_timeout",
         }
 

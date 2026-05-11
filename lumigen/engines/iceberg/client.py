@@ -1147,6 +1147,7 @@ class IcebergConnection:
 def connect(catalog_type: str,
             warehouse: t.Optional[str] = None, uri: t.Optional[str] = None,
             catalog_properties: t.Optional[t.Dict[str, t.Any]] = None,
+            hadoop_config: t.Optional[t.Dict[str, t.Any]] = None,
             connect_timeout: t.Optional[int] = None) -> IcebergConnection:
     props = (catalog_properties or {}).copy()
 
@@ -1155,6 +1156,10 @@ def connect(catalog_type: str,
         props[WAREHOUSE_LOCATION] = warehouse
     if uri is not None:
         props[URI] = uri
+    if hadoop_config:
+        for k, v in hadoop_config.items():
+            if v is not None:
+                props["hadoop." + k] = v
 
     filtered_props = {k: v for k, v in props.items() if v is not None}
     return IcebergConnection(catalog_type, filtered_props, connect_timeout)
