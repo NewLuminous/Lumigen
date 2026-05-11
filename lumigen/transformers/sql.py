@@ -15,6 +15,7 @@ from transformers.mixins import SQLFunctionMixin
 from utils.errors import UnsupportedDataFrameError, InvalidParameterError
 from utils.parsing import extract_params, extract_name_wo_params
 from utils.dataset import get_spark_data_type, cast_pandas, case_insensitive_column_name_mapping
+from utils.sql import TablePushdownExtractor
 from core.engine_context import SQLContextManager
 from core.engine_adapter import EngineAdapter
 from core.config.job import JobMode, JobSourceRelatedFields
@@ -76,11 +77,12 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
     @staticmethod
     def _rewrite_query_using_temp_views(select_exp: exp.Select, source: EngineAdapter,
                                         is_global_temp: t.Optional[bool] = True) -> t.Tuple[t.Dict, t.Dict]:
-        # --- Query Rewriting Logic ---
-        origin2tmp = {}
-        wo_alias2tmp = {}
-        origin2fetch_query = {}
-        for table_exp in select_exp.find_all(exp.Table):
+        tbl_dict = {}
+        origin2predicate: t.Dict[str, exp.Expression] = {}
+        extractor = TablePushdownExtractor(select_exp)
+        tbl_pushdowns = extractor.extract()
+        for tbl_pushdown in tbl_pushdowns:
+            table_exp: exp.Table = tbl_pushdown.table_node
             if source:
                 origin_table = source.get_qualified_table_name(table_exp.name, table_exp.db)
                 if table_exp.catalog:
@@ -90,24 +92,53 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
 
             if table_exp.name.upper() == "DUAL" and not table_exp.db:
                 origin_table = "DUAL"
+            elif not source: # Tables from Spark's built-in catalog
+                continue
+            
+            condition = tbl_pushdown.condition_node
+            tbl_dict[id(table_exp)] = (origin_table, condition)
+            if origin_table not in origin2predicate:
+                origin2predicate[origin_table] = condition
+            elif origin2predicate[origin_table] is not None:
+                # Do not pushdown if there are different predicates
+                if condition is not None and origin2predicate[origin_table].sql() != condition.sql():
+                    origin2predicate[origin_table] = None
+
+        origin2tmp = {}
+        origin2fetch_query = {}
+        for origin_table, predicate in origin2predicate.items():
+            origin2tmp[origin_table] = f"temp_{uuid.uuid4().hex}"
+            
+            if origin_table == "DUAL":
                 origin2fetch_query[origin_table] = None
             elif source:
                 if source.dialect == "kafka":
-                    fetch_query = table_exp.copy()
+                    fetch_query = origin_table
                 else:
-                    fetch_query = exp.select('*').from_(table_exp.copy())
+                    fetch_query = exp.select('*').from_(origin_table)
+                    if predicate:
+                        fetch_query = fetch_query.where(predicate)
 
                 origin2fetch_query[origin_table] = fetch_query
-            else:
-                continue
 
-            if origin_table not in origin2tmp:
-                temp_table = f"temp_{uuid.uuid4().hex}"
-                origin2tmp[origin_table] = temp_table
-                if not table_exp.alias:
-                    wo_alias2tmp[table_exp.alias_or_name] = temp_table
-            else:
-                temp_table = origin2tmp[origin_table]
+        for column_exp in select_exp.find_all(exp.Column):
+            if column_exp.table:
+                table_exp = extractor.get_table_for_column(column_exp)
+                if table_exp:
+                    origin_table = tbl_dict[id(table_exp)][0]
+                    temp_table = origin2tmp[origin_table]
+                    if not column_exp.table == table_exp.alias:
+                        column_exp.args["catalog"] = None
+                        column_exp.args["db"] = None
+                        column_exp.args["table"] = exp.Identifier(this=temp_table, quoted=False)
+
+        for tbl_pushdown in tbl_pushdowns:
+            table_exp: exp.Table = tbl_pushdown.table_node
+            origin_table = tbl_dict[id(table_exp)][0]
+            if origin_table not in origin2predicate:
+                continue
+            
+            temp_table = origin2tmp[origin_table]
 
             table_exp.args["catalog"] = None
             if is_global_temp:
@@ -115,12 +146,6 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
             else:
                 table_exp.args["db"] = None
             table_exp.args["this"] = exp.Identifier(this=temp_table, quoted=False)
-
-        for column_exp in select_exp.find_all(exp.Column):
-            if column_exp.table in wo_alias2tmp:
-                column_exp.args["catalog"] = None
-                column_exp.args["db"] = None
-                column_exp.args["table"] = wo_alias2tmp[column_exp.table]
 
         return origin2tmp, origin2fetch_query
 
@@ -238,7 +263,7 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
             return df
         except Exception as e: # Should be BinderException
             exc_type, _, exc_traceback = sys.exc_info()
-            exc_desc = str(e)
+            exc_desc = str(t.cast("BinderException", e))
             for origin, temp in temp_views.items():
                 exc_desc = exc_desc.replace(temp, origin)
             new_exception = exc_type(exc_desc)

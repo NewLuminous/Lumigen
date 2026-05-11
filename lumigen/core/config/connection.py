@@ -676,6 +676,42 @@ class MSSQLConnectionConfig(ConnectionConfig):
         return {"catalog_support": CatalogSupport.REQUIRES_SET_CATALOG}
     
 
+class IcebergConnectionConfig(ConnectionConfig):
+    catalog_type: Literal["hive", "hadoop", "rest", "glue", "jdbc", "nessie"]
+    warehouse: t.Optional[str] = None
+    uri: t.Optional[str] = None
+    catalog_properties: t.Optional[t.Dict[str, t.Any]] = {}
+    connect_timeout: int = 10
+
+    concurrent_tasks: int = 4
+    register_comments: bool = False
+    pre_ping: bool = True
+
+    type_: Literal["iceberg"] = Field(alias="type", default="iceberg")
+
+    _engine_import_validator = _get_engine_import_validator("pyiceberg", "iceberg")
+
+    @property
+    def _connection_kwargs_keys(self) -> t.Set[str]:
+        return {
+            "catalog_type",
+            "warehouse",
+            "uri",
+            "catalog_properties",
+            "connect_timeout",
+        }
+
+    @property
+    def _engine_adapter(self) -> t.Type[EngineAdapter]:
+        return engine_adapter.IcebergEngineAdapter
+
+    @property
+    def _connection_factory(self) -> t.Callable:
+        from engines.iceberg.client import connect
+
+        return connect
+
+
 class KafkaConnectionConfig(ConnectionConfig):
     bootstrap_servers: str
     group_id: t.Optional[str] = None
@@ -752,6 +788,16 @@ class SparkConnectionConfig(ConnectionConfig):
 
         spark_config = SparkConf()
         if self.config:
+            # Static configurations
+            static_confs = {
+                "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions", # For Iceberg
+            }
+            for k, v in static_confs.items():
+                if self.config.get(k):
+                    self.config[k] = self.config[k] + "," + v
+                else:
+                    self.config[k] = v
+
             for k, v in self.config.items():
                 spark_config.set(k, v)
 

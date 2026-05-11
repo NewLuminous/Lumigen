@@ -1,6 +1,7 @@
 from __future__ import annotations
 import typing as t
 import functools
+from dataclasses import dataclass, field
 from collections import defaultdict
 from sqlglot import exp, parse_one, ParseError, Dialect
 
@@ -65,36 +66,88 @@ def extract_main_table(query: t.Union[exp.Expression, str],
                        quoted: t.Optional[bool] = None,
                        ) -> str:
     """
-    Tries to extract the main table from a SQL query.
+    Tries to extract the primary source table from a SQL statement (Query, DML, DDL).
 
-    This function robustly finds the first table in the FROM clause,
-    handling simple joins and ignoring tables within subqueries or CTEs.
+    This function robustly finds the first-encountered base table by tracing through
+    constructs like CTEs, subqueries, joins, and unions.
 
     Returns:
-        The normalized name of the main table as a string
+        The normalized SQL string representation of the table's name.
     """
     if not isinstance(query, exp.Expression):
         if dialect and Dialect.get(dialect):
-            select_exp = parse_one(query, dialect=dialect, into=exp.Select)
+            query_exp = parse_one(query, dialect=dialect)
         else:
-            select_exp = parse_one(query, into=exp.Select)
+            query_exp = parse_one(query)
     else:
-        select_exp = query
+        query_exp = query.copy()
 
-    from_exp = select_exp.find(exp.From) or select_exp
-    table_exp = from_exp.find(exp.Table) or from_exp
-    if isinstance(table_exp, exp.Table):
-        table_name = table_exp
-    else:
-        table_name = table_exp.find(exp.Identifier)
+    # Extract all CTEs into a dictionary for alias resolution
+    ctes = {}
+    for cte in query_exp.find_all(exp.CTE):
+        ctes[cte.alias] = cte.this
+
+    def _resolve_table(node: exp.Expression, visited: t.Optional[t.Set[int]] = None) -> t.Optional[t.Union[exp.Table, exp.Identifier]]:
+        if visited is None:
+            visited = set()
+
+        if node is None:
+            return None
+            
+        node_id = id(node)
+        if node_id in visited:
+            return None  # Prevent infinite loops on recursive CTEs
+        visited.add(node_id)
+        
+        if isinstance(node, (exp.Table, exp.Identifier)):
+            if node.name in ctes:
+                return _resolve_table(ctes[node.name], visited)
+            return node
+        elif isinstance(node, exp.Create):
+            return _resolve_table(t.cast("exp.Expression", node.this).find(exp.Table), visited)
+        elif isinstance(node, (exp.Drop, exp.Insert, exp.Merge, exp.Describe, exp.Subquery, exp.Schema)):
+            return _resolve_table(node.this, visited)
+        elif isinstance(node, exp.TruncateTable):
+            return _resolve_table(node.find(exp.Table), visited)
+        elif isinstance(node, exp.Select):
+            from_exp = t.cast("exp.From", node.args.get("from"))
+            if from_exp:
+                return _resolve_table(from_exp.this, visited)
+        elif isinstance(node, exp.Union):
+            # Take the main table from the first statement in the UNION
+            return _resolve_table(node.this, visited)
+            
+        return None
+
+    # Start resolving from the top level
+    table_name = _resolve_table(query_exp)
+
+    # Fallback to the original generic search if exact resolution completely failed
+    if not table_name:
+        if isinstance(query_exp, exp.Select):
+            from_exp = query_exp.find(exp.From) or query_exp
+        else:
+            from_exp = query_exp
+        table_exp = from_exp.find(exp.Table) or from_exp
+        if isinstance(table_exp, exp.Table):
+            table_name = table_exp
+        else:
+            table_name = table_exp.find(exp.Identifier)
 
     if not isinstance(table_name, (exp.Identifier, exp.Table)):
         raise ValueError(f"Could not extract a main table from the query: {str(query)[:100]}...")
+    
+    if isinstance(table_name, exp.Table):
+        # Only keep the identifiers
+        table_name = exp.table_(*table_name.parts[::-1])
     if quoted is not None:
         for identifier_exp in table_name.find_all(exp.Identifier):
             identifier_exp.set("quoted", quoted)
 
-    return table_name.sql()
+    if dialect and Dialect.get(dialect):
+        return table_name.sql(dialect=dialect)
+    else:
+        return table_name.sql()
 
 def dialect_insensitive_tbl_name(table_name: TableName, from_dialect: str) -> str:
     """
@@ -165,25 +218,28 @@ def identifier_requires_quoting(name: str, dialect_name: str, identify_setting: 
 
     return unquoted_content == name
 
-def get_conjuncts(node):
+def split_and_conditions(condition_expr: t.Optional[exp.Expression]) -> t.List[exp.Expression]:
     """Recursively extract individual conditions connected by AND."""
-    if not node:
+    if not condition_expr:
         return []
-    if isinstance(node, exp.And):
-        return get_conjuncts(node.left) + get_conjuncts(node.right)
-    if isinstance(node, exp.Paren):
-        return get_conjuncts(node.this)
-    return [node]
+    if isinstance(condition_expr, exp.And):
+        return split_and_conditions(condition_expr.left) + split_and_conditions(condition_expr.right)
+    if isinstance(condition_expr, exp.Paren):
+        return split_and_conditions(condition_expr.this)
+    return [condition_expr]
+
+
+@dataclass
+class ExtractedTablePushdown:
+    """Structured representation of a table and its pushdown conditions."""
+    table_name: str
+    table_node: exp.Table
+    alias: str
+    condition_sql: t.Optional[str] = None
+    condition_node: t.Optional[exp.Expression] = None
+    _conditions: t.List[exp.Expression] = field(default_factory=list, repr=False)
 
 class TablePushdownExtractor:
-    # Result Key Constants
-    TABLE = "table"
-    TABLE_NODE = "table_node"
-    ALIAS = "alias"
-    CONDITION = "condition_sql"
-    CONDITION_NODE = "condition_node"
-    _CONDITIONS = "_conditions"
-
     def __init__(self, parsed_ast: exp.Expression):
         """
         Pre-computes and indexes all tables by their local query scope in a single pass.
@@ -191,8 +247,8 @@ class TablePushdownExtractor:
         self.parsed = parsed_ast
         self.scope_types = (exp.Select, exp.Update, exp.Delete)
         self.tables_by_scope: t.Dict[t.Any, t.List[exp.Table]] = defaultdict(list)
-        self.tables_data =[]
-        self.node_to_data = {}
+        self.tables_data: t.List[ExtractedTablePushdown] = []
+        self.node_to_data: t.Dict[int, ExtractedTablePushdown] = {}
         
         # Find all tables and group them by their immediate parent scope
         for table_exp in parsed_ast.find_all(exp.Table):
@@ -200,12 +256,11 @@ class TablePushdownExtractor:
             scope_id = id(scope) if scope else 'root'
             self.tables_by_scope[scope_id].append(table_exp)
 
-            data = {
-                self.TABLE_NODE: table_exp,
-                self.TABLE: table_exp.name,
-                self.ALIAS: table_exp.alias_or_name,
-                self._CONDITIONS: []
-            }
+            data = ExtractedTablePushdown(
+                table_node=table_exp,
+                table_name=table_exp.name,
+                alias=table_exp.alias_or_name
+            )
             self.tables_data.append(data)
             self.node_to_data[id(table_exp)] = data
 
@@ -214,7 +269,7 @@ class TablePushdownExtractor:
         if not isinstance(column, exp.Column):
             return None
 
-        col_table = column.table 
+        col_table = column.table
         current_scope = column.find_ancestor(*self.scope_types)
         
         # Traverse scopes from innermost to outermost
@@ -225,8 +280,28 @@ class TablePushdownExtractor:
             if col_table:
                 # CASE 1: Qualified Column (e.g., transactions.amount or t.amount)
                 for table_exp in tables_in_scope:
-                    if col_table in (table_exp.alias_or_name, table_exp.name):
+                    if col_table == table_exp.alias:
                         return table_exp
+                    
+                found_results = set()
+                for table_exp in tables_in_scope:
+                    if col_table == table_exp.alias_or_name:
+                        found_results.add((table_exp.catalog, table_exp.db, table_exp.alias_or_name))
+                if len(found_results) > 1 and column.db:
+                    found_results = set()
+                    for table_exp in tables_in_scope:
+                        if col_table == table_exp.alias_or_name and column.db == table_exp.db:
+                            found_results.add((table_exp.catalog, table_exp.db, table_exp.alias_or_name))
+                if len(found_results) > 1 and column.catalog:
+                    found_results = set()
+                    for table_exp in tables_in_scope:
+                        if col_table == table_exp.alias_or_name and column.db == table_exp.db and column.catalog == table_exp.catalog:
+                            found_results.add((table_exp.catalog, table_exp.db, table_exp.alias_or_name))
+                if len(found_results) == 1:
+                    col_catalog, col_db, col_table = found_results.pop()
+                    for table_exp in tables_in_scope:
+                        if table_exp.alias_or_name == col_table and table_exp.db == col_db and table_exp.catalog == col_catalog:
+                            return table_exp
             else:
                 # CASE 2: Unqualified Column (e.g., amount)
                 if len(tables_in_scope) == 1:
@@ -243,20 +318,27 @@ class TablePushdownExtractor:
                 
         return None
     
-    def extract(self) -> t.List[t.Dict[str, t.Any]]:
-        for select_node in self.parsed.find_all(exp.Select):
+    def extract(self) -> t.List[ExtractedTablePushdown]:
+        """
+        Analyzes the AST to extract predicates (WHERE/JOIN conditions) that can be 
+        safely "pushed down" to individual tables.
+
+        The method performs a scoped analysis of SELECT, UPDATE, and DELETE statements 
+        to identify conditions that reference exactly one table.
+        """
+        for scope_node in self.parsed.find_all(*self.scope_types):
             # Gather candidate conditions from WHERE and ON clauses
             candidates = []
 
             # WHERE clause: safe to push to any referenced table in this scope
-            where_clause = select_node.args.get("where")
+            where_clause = scope_node.args.get("where")
             if where_clause:
-                for c in get_conjuncts(where_clause.this):
+                for c in split_and_conditions(where_clause.this):
                     candidates.append({"condition": c, "allowed_nodes": None})
 
             # JOIN ON clauses: extract conditions, but enforce outer-join safety rules
-            join: exp.Join
-            for join in select_node.args.get("joins") or []:
+            joins: t.List[exp.Join] = scope_node.args.get("joins") or []
+            for join in joins:
                 on_clause = join.args.get("on")
                 if on_clause:
                     side = (join.args.get("side") or "INNER").upper()
@@ -271,7 +353,7 @@ class TablePushdownExtractor:
                         # Too dangerous/complex to push down ON conditions for RIGHT/FULL blindly.
                         continue
                         
-                    for c in get_conjuncts(on_clause):
+                    for c in split_and_conditions(on_clause):
                         candidates.append({"condition": c, "allowed_nodes": allowed_nodes})
 
             # Resolve Candidates via the index
@@ -309,11 +391,11 @@ class TablePushdownExtractor:
                     if allowed_nodes is not None and id(target_table_node) not in allowed_nodes:
                         continue
                         
-                    self.node_to_data[id(target_table_node)][self._CONDITIONS].append(condition)
+                    self.node_to_data[id(target_table_node)]._conditions.append(condition)
 
         # Output Formatting & Column prefix stripping
         for data in self.tables_data:
-            conds = data[self._CONDITIONS]
+            conds = data._conditions
             if conds:
                 combined = functools.reduce(lambda x, y: exp.and_(x, y), conds)
                 clean_condition = combined.copy()
@@ -323,12 +405,10 @@ class TablePushdownExtractor:
                     col.set("db", None)
                     col.set("catalog", None)
                 
-                data[self.CONDITION] = clean_condition.sql()
-                data[self.CONDITION_NODE] = clean_condition
+                data.condition_sql = clean_condition.sql()
+                data.condition_node = clean_condition
             else:
-                data[self.CONDITION] = None
-                data[self.CONDITION_NODE] = None
-                
-            del data[self._CONDITIONS]
+                data.condition_sql = None
+                data.condition_node = None
             
         return self.tables_data

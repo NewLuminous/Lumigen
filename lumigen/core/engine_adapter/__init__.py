@@ -13,11 +13,14 @@ from sqlmesh.core.engine_adapter.redshift import RedshiftEngineAdapter
 from sqlmesh.core.engine_adapter.snowflake import SnowflakeEngineAdapter
 from sqlmesh.core.engine_adapter.trino import TrinoEngineAdapter
 from sqlmesh.core.engine_adapter.athena import AthenaEngineAdapter
+from sqlmesh.core.engine_adapter.risingwave import RisingwaveEngineAdapter
+from sqlmesh.core.engine_adapter.fabric import FabricEngineAdapter
 from core.engine_adapter.clickhouse import ClickHouseEngineAdapter
 from core.engine_adapter.oracle import OracleEngineAdapter
 from core.engine_adapter.postgres import PostgresEngineAdapter
 from core.engine_adapter.mysql import MySQLEngineAdapter
 from core.engine_adapter.mssql import MSSQLEngineAdapter
+from core.engine_adapter.iceberg import IcebergEngineAdapter
 from core.engine_adapter.kafka import KafkaEngineAdapter
 from core.engine_adapter.spark import (
     SparkEngineAdapter, SparkClickHouseEngineAdapter, SparkJDBCEngineAdapter, SparkKafkaEngineAdapter,
@@ -37,7 +40,10 @@ DIALECT_TO_ENGINE_ADAPTER = {
     "mssql": MSSQLEngineAdapter,
     "trino": TrinoEngineAdapter,
     "athena": AthenaEngineAdapter,
+    "risingwave": RisingwaveEngineAdapter,
+    "fabric": FabricEngineAdapter,
     "oracle": OracleEngineAdapter,
+    "iceberg": IcebergEngineAdapter,
     "kafka": KafkaEngineAdapter,
 }
 

@@ -8,6 +8,7 @@ if t.TYPE_CHECKING:
 
 from core.adapters import AdapterResolver
 from core.engine_adapter.spark.configurators.jdbc import SparkJDBCConfigurator
+from core.engine_adapter.spark.configurators.iceberg import SparkIcebergConfigurator
 from core.engine_adapter.spark.configurators.clickhouse import SparkClickHouseConfigurator
 from core.engine_adapter.spark.configurators.kafka import SparkKafkaConfigurator
 
@@ -19,6 +20,7 @@ class SparkAdapterResolver(AdapterResolver):
     # The order can matter if a source could be handled by multiple configurators.
     CONFIGURATORS: t.List[SparkAdapterConfigurator] = [
         SparkKafkaConfigurator(),
+        SparkIcebergConfigurator(),
         SparkClickHouseConfigurator(),
         SparkJDBCConfigurator(),
     ]

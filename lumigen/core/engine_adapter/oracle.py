@@ -253,7 +253,7 @@ class OracleEngineAdapter(
         track_rows_processed: bool = True,
         source_columns: t.Optional[t.List[str]] = None,
     ) -> None:
-        if isinstance(table_name, (exp.Query, exp.DerivedTable)): # TODO
+        if isinstance(query_or_df, (exp.Query, exp.DerivedTable)): # TODO
             super().insert_append(table_name, query_or_df, target_columns_to_types, track_rows_processed, source_columns)
             return
         

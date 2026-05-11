@@ -80,10 +80,22 @@ class SparkSessionConnection:
         return self.catalog or "spark_catalog"
 
     def set_current_catalog(self, catalog_name: str) -> None:
-        if self._spark_major_minor >= (3, 4):
-            return self.spark.catalog.setCurrentCatalog(catalog_name)
-        else:
-            self.spark.sql(f"SET CATALOG {self.catalog}")
+        from py4j.protocol import Py4JError
+
+        try:
+            if self._spark_major_minor >= (3, 4):
+                return self.spark.catalog.setCurrentCatalog(catalog_name)
+            else:
+                self.spark.sql(f"SET CATALOG {self.catalog}")
+        # Databricks does not support `setCurrentCatalog` with Unity catalog
+        # and shared clusters so we use the Databricks Unity only SQL command instead
+        except Py4JError:
+            from pyspark.sql.utils import ParseException
+
+            try:
+                self.spark.sql(f"USE CATALOG {self.catalog}")
+            except ParseException:
+                self.spark.sql(f"USE {self.catalog}")
 
     def cursor(self) -> SparkSessionCursor:
         try:
@@ -97,14 +109,7 @@ class SparkSessionConnection:
             # Also Serverless jobs don't support access to spark context so we pass for that too
             pass
         if self.catalog:
-            from py4j.protocol import Py4JError
-
-            try:
-                self.set_current_catalog(self.catalog)
-            # Databricks does not support `setCurrentCatalog` with Unity catalog
-            # and shared clusters so we use the Databricks Unity only SQL command instead
-            except Py4JError:
-                self.spark.sql(f"USE CATALOG {self.catalog}")
+            self.set_current_catalog(self.catalog)
         return SparkSessionCursor(self.spark)
 
     def commit(self) -> None:
