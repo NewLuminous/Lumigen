@@ -1,0 +1,34 @@
+source:
+  type: iceberg
+  catalog_type: hadoop
+  warehouse: s3a://your_bucket/spark/warehouse/
+  catalog_properties:
+    cache-enabled: true
+  hadoop.config:
+    fs.s3a.aws.credentials.provider: org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
+    fs.s3a.endpoint: s3.cn-north-1.amazonaws.com.cn
+    fs.s3a.access.key: xxxxxxxxxxxxxxxxx
+    fs.s3a.secret.key: xxxxxxxxxxxxxxxxx
+    fs.defaultFS: s3a://your_bucket
+
+sink:
+  type: iceberg
+  catalog_type: rest
+  warehouse: arn:aws:s3tables:<Region>:<accountID>:bucket/<bucketname>
+  uri: https://s3tables.<Region>.amazonaws.com/iceberg
+  catalog_properties:
+    rest.sigv4-enabled: true
+    rest.signing-name: s3tables
+    rest.signing-region: <Region>
+
+executor:
+  type: spark
+  app_name: batch iceberg
+  config:
+    spark.scheduler.mode: FAIR
+
+job_properties:
+  source_table: hadoop_s3_catalog.user_data
+  sink_table: s3_rest_catalog.user_data
+  data_save_mode: MERGE
+  sink_key: user_id
