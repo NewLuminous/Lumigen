@@ -67,6 +67,30 @@ class JobManagerAdapter(JobPreviewerBase, ABC):
 
             options: dict = config.job_properties.setdefault("spark_submit_options", {})
             options.setdefault("master", settings.SPARK_MASTER)
+            conf: t.List[str] = options.setdefault("conf", [])
+            if t.cast("str", options["master"]).startswith("k8s"):
+                existing_keys = {c.split('=', 1)[0] for c in conf if '=' in c}
+                k8s_defaults = {
+                    "spark.driver.port": 0,
+                    "spark.driver.bindAddress": "0.0.0.0",
+                    "spark.kubernetes.namespace": settings.KUBE_EXECUTOR_NAMESPACE,
+                    "spark.kubernetes.container.image": settings.EXECUTOR_IMAGE_NAME,
+                    "spark.kubernetes.container.image.pullPolicy": "IfNotPresent",
+                    "spark.kubernetes.authenticate.driver.serviceAccountName": settings.KUBE_SERVICE_ACCOUNT,
+                    "spark.kubernetes.authenticate.executor.serviceAccountName": settings.KUBE_EXECUTOR_SERVICE_ACCOUNT,
+
+                    # Dynamic Resource Allocation for Auto-scaling
+                    "spark.dynamicAllocation.enabled": "true",
+                    "spark.dynamicAllocation.shuffleTracking.enabled": "true",
+                    "spark.dynamicAllocation.minExecutors": settings.SPARK_MIN_EXECUTORS,
+                    "spark.dynamicAllocation.maxExecutors": settings.SPARK_MAX_EXECUTORS,
+                    "spark.dynamicAllocation.initialExecutors": settings.SPARK_MIN_EXECUTORS,
+                    "spark.dynamicAllocation.executorIdleTimeout": "60s", 
+                    "spark.dynamicAllocation.schedulerBacklogTimeout": "1s", 
+                }
+                for key, val in k8s_defaults.items():
+                    if key not in existing_keys:
+                        conf.append(f"{key}={val}")
 
         return config
 

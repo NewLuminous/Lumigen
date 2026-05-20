@@ -28,6 +28,9 @@ class Settings(BaseSettings):
         str(Path(__file__).parent / "kubeconfig")
     ])
     KUBE_NAMESPACE: str = "lumigen"
+    KUBE_EXECUTOR_NAMESPACE: str = "spark"
+    KUBE_SERVICE_ACCOUNT: str = "spark"
+    KUBE_EXECUTOR_SERVICE_ACCOUNT: str = "default"
     KUBE_CHECKPOINT_PVC_NAME: str = "spark-checkpoints-pvc"
 
     # Metrics settings
@@ -43,6 +46,8 @@ class Settings(BaseSettings):
 
     JOB_IMAGE_NAME: str = Field(default="newluminous/lumigen",
                                 description="The Docker image to use for running jobs.")
+    EXECUTOR_IMAGE_NAME: str = Field(default="newluminous/lumigen",
+                                     description="The Docker image to use for executors (e.g., Spark workers).")
     CHECKPOINT_DIR: str = Field(default="/tmp/spark-ckpts",
                                 description="The directory for Spark checkpoint data.")
     PREVIEW_JOB_CONCURRENCY_LIMIT: int = 10
@@ -66,6 +71,10 @@ class Settings(BaseSettings):
         default="local[*]",
         description="The --master argument for spark-submit. Examples: 'local[*]', 'yarn', or 'k8s://<api_server>'."
     )
+
+    # Spark Auto-scaling Limits
+    SPARK_MIN_EXECUTORS: int = 1
+    SPARK_MAX_EXECUTORS: int = 10
     
     @model_validator(mode='after')
     def calculate_derived_settings(self) -> 'Settings':

@@ -1,0 +1,24 @@
+#version: '2.4'
+
+services:
+  lumigen-api:
+    image: ${JOB_IMAGE_NAME:-newluminous/lumigen:latest}
+    user: "root"
+    command: uvicorn api.main:app --host 0.0.0.0 --port 7777
+    ports:
+      - "7777:7777"
+    env_file:
+      - .env
+    environment:
+      - KUBECONFIG=/etc/kubeconfig
+    volumes:
+      - ./kubeconfig:/etc/kubeconfig:ro
+      - /etc/localtime:/etc/localtime:ro
+
+      # Allows the API container to spawn sibling "job" containers on the host Docker daemon.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp:/tmp
+      
+      # Matches settings.CHECKPOINT_DIR to ensure streaming jobs have a persistent place to write.
+      - /tmp/spark-ckpts:/tmp/spark-ckpts
+    restart: unless-stopped

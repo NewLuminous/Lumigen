@@ -1,47 +1,52 @@
-FROM newluminous/pyspark
-
-ARG PYTHON_VERSION=3.9
-ARG SPARK_CONF_DIR=""
-ARG HADOOP_USER_NAME_ARG=spark
-
-# Note: The actual Linux user running commands remains 'spark' (from the base image)
-ENV HADOOP_USER_NAME=${HADOOP_USER_NAME_ARG}
-ENV PYTHONPATH="/home/spark:${PYTHONPATH}"
+ARG BASE_IMAGE=newluminous/spark-k8s:3.3.3
+FROM ${BASE_IMAGE}
 
 # Metadata labels
 LABEL maintainer="NewLuminous"
 LABEL project.name="lumigen"
 
-# Switch to root user for installations
-USER root
+ARG SPARK_CONF_DIR=""
+
+# Optional: Override the Hadoop user if needed (base image sets it to 'spark' by default)
+ARG HADOOP_USER_NAME_ARG=spark
+ENV HADOOP_USER_NAME=${HADOOP_USER_NAME_ARG}
+ENV PYTHONPATH="/opt/spark/work-dir:${PYTHONPATH}"
+
+# Switch to root (UID 0) to copy files, install packages, and fix permissions
+USER 0
+
+RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # Paths are now relative to the build context, which must be the parent directory.
 # Install base project requirements
 COPY requirements.txt /tmp/requirements.txt
-RUN python${PYTHON_VERSION} -m pip install --no-cache-dir -r /tmp/requirements.txt
+RUN python3 -m pip install --no-cache-dir --no-build-isolation -r /tmp/requirements.txt
 
 # Install API-specific requirements
 COPY api/requirements.txt /tmp/api_requirements.txt
-RUN python${PYTHON_VERSION} -m pip install --no-cache-dir -r /tmp/api_requirements.txt && \
+RUN python3 -m pip install --no-cache-dir --no-build-isolation -r /tmp/api_requirements.txt && \
     rm /tmp/requirements.txt /tmp/api_requirements.txt
 
-WORKDIR /home/spark
+# K8s standard working directory
+WORKDIR /opt/spark/work-dir
 COPY . .
 
-# Ensure correct ownership for the 'spark' user (UID/GID 1000 from base image)
-RUN \
-    chown -R spark:spark /home/spark && \
-    if [ -d "${SPARK_CONF_DIR}" ]; then \
+# Use Group 0 to allow K8s anonymous UIDs to read/write the configs
+RUN chgrp -R 0 /opt/spark/work-dir && \
+    chmod -R g+rwX /opt/spark/work-dir && \
+    if [ -n "${SPARK_CONF_DIR}" ] && [ -d "${SPARK_CONF_DIR}" ]; then \
         echo "Spark configuration directory '${SPARK_CONF_DIR}' found. Copying to /opt/spark/conf/"; \
         mkdir -p /opt/spark/conf/ && \
         cp -rT "${SPARK_CONF_DIR}/." /opt/spark/conf/ && \
-        chown -R spark:spark /opt/spark/conf; \
+        chgrp -R 0 /opt/spark/conf && \
+        chmod -R g+rwX /opt/spark/conf; \
     else \
-        echo "Optional Spark configuration directory '${SPARK_CONF_DIR}' not found. Skipping."; \
+        echo "Optional Spark configuration directory not provided or not found. Skipping."; \
     fi
 
-# Switch back to the non-root user defined in the base image
-USER spark
+# Switch back to the non-root Spark user defined in the base image (UID 185)
+ARG SPARK_UID=185
+USER ${SPARK_UID}
 
 # Inherit ENTRYPOINT and CMD from the base image
 # ENTRYPOINT ["/usr/bin/tini", "--"]

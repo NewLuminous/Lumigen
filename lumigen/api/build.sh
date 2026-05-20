@@ -51,9 +51,15 @@
 # Exit immediately if a command exits with a non-zero status.
 set -e
 
+# Base Image Configuration
+BASE_IMAGE_TAG=${BASE_IMAGE_TAG:-"3.3.3"}
+BASE_IMAGE_NAME="newluminous/spark-k8s:${BASE_IMAGE_TAG}"
+# Adjust this path based on where your spark-k8s base repo actually lives relative to lumigen/api/
+BASE_BUILD_SCRIPT_PATH="../../spark-k8s/build.sh"
+
 # --- Default Configuration ---
 DEFAULT_IMAGE_NAME="newluminous/lumigen"
-DEFAULT_IMAGE_TAG="latest"
+DEFAULT_IMAGE_TAG="${BASE_IMAGE_TAG}"
 EXTERNAL_SPARK_CONF_DIR=""
 
 # --- Script Initialization ---
@@ -124,6 +130,32 @@ while [[ "$#" -gt 0 ]]; do
     esac
     shift
 done
+
+# --- Check if base image exists, build if not ---
+echo "================================================="
+echo "Checking Base Image"
+echo "-------------------------------------------------"
+if ! docker image inspect "$BASE_IMAGE_NAME" > /dev/null 2>&1; then
+    echo "Base image '${BASE_IMAGE_NAME}' not found locally."
+    if [ -f "$BASE_BUILD_SCRIPT_PATH" ]; then
+        echo "Attempting to build base image using ${BASE_BUILD_SCRIPT_PATH}..."
+        (cd "$(dirname "$BASE_BUILD_SCRIPT_PATH")" && ./$(basename "$BASE_BUILD_SCRIPT_PATH"))
+        
+        if ! docker image inspect "$BASE_IMAGE_NAME" > /dev/null 2>&1; then
+             echo "Error: Failed to build base image '${BASE_IMAGE_NAME}'. Please check logs." >&2
+             exit 1
+        fi
+        echo "Base image '${BASE_IMAGE_NAME}' built successfully."
+    else
+        echo "Error: Base build script '${BASE_BUILD_SCRIPT_PATH}' not found." >&2
+        echo "Please build '${BASE_IMAGE_NAME}' manually first." >&2
+        exit 1
+    fi
+else
+    echo "Base image '${BASE_IMAGE_NAME}' is ready."
+fi
+echo "================================================="
+echo ""
 
 # --- Main Build Logic ---
 DOCKER_BUILD_ARG_SPARK_CONF=""

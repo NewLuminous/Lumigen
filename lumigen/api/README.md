@@ -57,10 +57,91 @@ All endpoints are prefixed with `/v1`.
 
 ### Prerequisites
 
-*   Python 3.9+
+*   Python 3.10+
 *   The chosen job execution runtime must be available (e.g., Docker Desktop running, or `kubeconfig` pointing to a cluster).
 
-### Installation & Running the API
+### 1. Build the Docker Image
+
+Before running jobs, you must build the Lumigen Docker image. A helper script is provided to handle the build process securely:
+
+```bash
+./build.sh
+```
+
+*Options for `build.sh`:*
+*   `-n, --name`: Image name (Default: `newluminous/lumigen`)
+*   `-t, --tag`: Image tag (Default: `3.3.3` or your base tag)
+*   `-c, --conf-dir`: Path to an external Spark configuration directory
+
+### 2. Configure Your Environment
+
+Create a `.env` file in the `api/` directory (or the project root) to set your API and backend settings. Choose the configuration that matches your desired job execution backend:
+
+**Option A: Using Docker (Recommended for Local Development)**
+```dotenv
+# .env
+JOB_MANAGER_TYPE=docker
+JOB_IMAGE_NAME=newluminous/lumigen:latest
+
+# Spark execution mode (local by default for Docker)
+SPARK_MASTER=local[*]
+```
+
+**Option B: Using Kubernetes (Recommended for Production)**
+```dotenv
+# .env
+JOB_MANAGER_TYPE=kubernetes
+JOB_IMAGE_NAME=newluminous/lumigen:latest
+EXECUTOR_IMAGE_NAME=newluminous/spark-k8s:latest
+
+# Kubernetes Authentication & Namespaces
+KUBECONFIG=/path/to/your/.kube/config
+KUBE_NAMESPACE=lumigen
+KUBE_EXECUTOR_NAMESPACE=spark
+KUBE_SERVICE_ACCOUNT=spark
+KUBE_EXECUTOR_SERVICE_ACCOUNT=default
+
+# Spark Master URL (Targeting the Kubernetes API Server)
+SPARK_MASTER=k8s://https://<your-k8s-api-server>:<port>
+
+# Spark Auto-Scaling (Dynamic Resource Allocation)
+SPARK_MIN_EXECUTORS=1
+SPARK_MAX_EXECUTORS=10
+
+# Real-time Metrics (Optional: 'metrics-api' or 'prometheus')
+METRICS_PROVIDER=prometheus
+PROMETHEUS_URL=http://localhost:9090
+```
+
+### 3. Setup Kubernetes Pre-requisites (For Option B Only)
+
+If you chose to run using **Option B (Kubernetes)**, you must establish the required namespaces and configure the Role-Based Access Control (RBAC) permissions before launching jobs. This grants the Spark driver running in your application namespace permission to dynamically orchestrate executor pods.
+
+Apply the configurations found under `k8s/spark-rbac/`:
+
+```bash
+# 1. Create the main application namespace if it doesn't exist
+kubectl create namespace lumigen
+
+# 2. Deploy the RBAC configuration and the executor namespace
+kubectl apply -f k8s/spark-rbac/
+```
+
+### 4. Run the API Server
+
+You can run the API server using Docker Compose (Recommended) or locally via Python.
+
+**Method A: Running via Docker Compose (Recommended)**
+
+This is the easiest way to run the API. The provided `docker-compose.yml` mounts the Docker socket (allowing the API container to spawn sibling "job" containers) and sets up the necessary volume mounts for configurations and checkpoints.
+
+```bash
+docker-compose up -d
+```
+
+**Method B: Running Locally via Uvicorn**
+
+If you prefer to run the API directly on your host machine for development/debugging:
 
 1.  Navigate to the `api/` directory.
 
@@ -69,28 +150,16 @@ All endpoints are prefixed with `/v1`.
     pip install -r requirements.txt
     ```
 
-3.  Configure your environment. Create a `.env` file in the root directory of the project to set API and backend settings:
-    ```dotenv
-    # .env
-    # Choose the backend: 'docker' or 'kubernetes'
-    JOB_MANAGER_TYPE=docker
-    JOB_IMAGE_NAME=your-repo/lumigen-job-runner:latest
-
-    # If using Kubernetes
-    KUBECONFIG=/path/to/your/.kube/config
-
-    # Choose the metrics provider: 'metrics-api' or 'prometheus'
-    METRICS_PROVIDER=prometheus
-    PROMETHEUS_URL=http://localhost:9090
-    ```
-
-4.  Run the API server using Uvicorn:
+3.  Run the API server using Uvicorn:
     ```bash
     uvicorn api.main:app --host 0.0.0.0 --port 7777 --reload
     ```
     *   The `--reload` flag is great for development, as it automatically restarts the server when you change the code.
 
-5.  Access the interactive documentation by navigating to [http://localhost:7777/docs](http://localhost:7777/docs) in your browser.
+### 5. Access the API
+
+Once running, access the interactive API documentation (Swagger UI) by navigating to:
+**[http://localhost:7777/docs](http://localhost:7777/docs)**
 
 ## Example: Validating a Connection via cURL
 

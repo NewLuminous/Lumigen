@@ -622,11 +622,25 @@ class KubernetesAdapter(JobManagerAdapter):
             )
 
         env_vars = [
-            client.V1EnvVar(name="TZ", value=self.host_timezone)
+            client.V1EnvVar(name="TZ", value=self.host_timezone),
+            client.V1EnvVar(
+                name="SPARK_LOCAL_IP",
+                value_from=client.V1EnvVarSource(
+                    field_ref=client.V1ObjectFieldSelector(field_path="status.podIP")
+                )
+            ),
+            client.V1EnvVar(
+                name="SPARK_LOCAL_HOSTNAME",
+                value_from=client.V1EnvVarSource(
+                    field_ref=client.V1ObjectFieldSelector(field_path="status.podIP")
+                )
+            ),
         ]
 
         container = client.V1Container(
-            name="etl-container", image=settings.JOB_IMAGE_NAME, command=command,
+            name="etl-container", image=settings.JOB_IMAGE_NAME,
+            command=["/opt/entrypoint.sh"], # Executes the security fix first
+            args=command,
             volume_mounts=volume_mounts,
             env=env_vars,
             image_pull_policy="IfNotPresent",
@@ -637,7 +651,7 @@ class KubernetesAdapter(JobManagerAdapter):
         
         return client.V1PodTemplateSpec(
             metadata=client.V1ObjectMeta(labels=pod_labels),
-            spec=client.V1PodSpec(containers=[container], volumes=volumes)
+            spec=client.V1PodSpec(containers=[container], volumes=volumes, service_account_name=settings.KUBE_SERVICE_ACCOUNT)
         )
     
     def _create_k8s_job_object(self, resource_name: str, labels: dict, config: Config,

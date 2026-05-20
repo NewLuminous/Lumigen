@@ -42,15 +42,16 @@ class DockerAdapter(JobManagerAdapter):
     jobs_by_name: t.Dict[str, t.Set[str]] = {}
 
     def __init__(self):
+        self.client = None
         try:
             self.client = docker.from_env()
             # Test connection
             self.client.ping()
             logger.debug("Successfully connected to Docker daemon.")
+
+            self._refresh_job_dict()
         except docker.errors.DockerException as e:
             logger.error(f"Could not connect to Docker daemon: {e}")
-
-        self._refresh_job_dict()
 
     def _perform_submit(self, config: Config, id: str, name: t.Optional[str]=None, checkpoint_dir: t.Optional[str]=None) -> JobStatusResponse:
         id = DockerAdapter._normalize_job_id(id)
@@ -115,7 +116,7 @@ class DockerAdapter(JobManagerAdapter):
                 current_file_path = Path(__file__).resolve()
                 host_project_path = current_file_path.parent.parent.parent.parent
                 volumes = {
-                    #str(host_project_path): {'bind': '/home/spark', 'mode': 'ro'},
+                    #str(host_project_path): {'bind': '/opt/spark/work-dir', 'mode': 'ro'},
                 }
                 # Sync container time with host time for accurate logging
                 if Path('/etc/localtime').exists():
@@ -439,7 +440,7 @@ class DockerAdapter(JobManagerAdapter):
             current_file_path = Path(__file__).resolve()
             host_project_path = current_file_path.parent.parent.parent.parent
             volumes = {
-                #str(host_project_path): {'bind': '/home/spark', 'mode': 'ro'},
+                #str(host_project_path): {'bind': '/opt/spark/work-dir', 'mode': 'ro'},
             }
             # Sync container time with host time for accurate logging
             if Path('/etc/localtime').exists():
@@ -511,6 +512,9 @@ class DockerAdapter(JobManagerAdapter):
                         logger.error(f"Failed to delete temp config file '{temp_file.resolve()}': {e}")
 
     def _refresh_job_dict(self):
+        if self.client is None:
+            return
+
         new_job_dict = defaultdict(ContainerInfo)
         containers = self.client.containers.list(all=True, sparse=True)
         for container in containers:
@@ -839,6 +843,9 @@ def get_docker_adapter():
     if _docker_adapter_instance is None or _docker_adapter_instance.client is None:
         _docker_adapter_instance = DockerAdapter()
     if _docker_adapter_instance.client is None:
-        raise HTTPException(status_code=503, detail="Docker daemon not available.")
+        raise HTTPException(
+            status_code=503, 
+            detail="Docker daemon not available. If running inside a container, ensure '/var/run/docker.sock' is mounted and the container has sufficient permissions (e.g., user: 'root').",
+        )
 
     return _docker_adapter_instance
