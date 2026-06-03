@@ -7,9 +7,6 @@ LABEL project.name="lumigen"
 
 ARG SPARK_CONF_DIR=""
 
-# Optional: Override the Hadoop user if needed (base image sets it to 'spark' by default)
-ARG HADOOP_USER_NAME_ARG=spark
-ENV HADOOP_USER_NAME=${HADOOP_USER_NAME_ARG}
 ENV PYTHONPATH="/opt/spark/work-dir:${PYTHONPATH}"
 
 # Switch to root (UID 0) to copy files, install packages, and fix permissions
