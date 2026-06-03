@@ -44,32 +44,35 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
         
         # --- DUAL Table Validation Logic ---
         dual_exists = False
-        source_table = JobSourceRelatedFields(**kwargs).get_source_path()
+        src_tbl_exists = False
         for table_exp in select_exp.find_all(exp.Table):
-            if source:
-                origin_table = source.get_qualified_table_name(table_exp.name, table_exp.db)
-                if table_exp.catalog:
-                    origin_table = table_exp.catalog + "." + origin_table
-            else:
-                origin_table = table_exp.sql(dialect=Dialects.SPARK, identify=False)
             if table_exp.name.upper() == "DUAL" and not table_exp.db:
                 dual_exists = True
-            if kwargs.get("job_mode", JobMode.BATCH) == JobMode.BATCH:
-                try:
-                    tbl_wo_alias = table_exp.copy()
-                    tbl_wo_alias.args["alias"] = None
-                    if exp.to_table(source_table).sql() == tbl_wo_alias.sql():
-                        dual_exists = True
-                except:
-                    pass
-        if not dual_exists:
-            if kwargs.get("job_mode", JobMode.BATCH) == JobMode.BATCH:
-                raise InvalidParameterError("Query must select from `DUAL` table or provided source table at least once." \
-                    " `DUAL` table represents the main table. All tables except `DUAL` are read in batch mode."
+            try:
+                source_table = exp.to_table(
+                    JobSourceRelatedFields(**kwargs).get_source_path(source.DIALECT if source else None),
+                    dialect=source.DIALECT if source else None,
                 )
-            else:
+                is_src_tbl = True
+                if table_exp.catalog and table_exp.catalog != source_table.catalog:
+                    is_src_tbl = False
+                if table_exp.db and table_exp.db != source_table.db:
+                    is_src_tbl = False
+                if table_exp.name != source_table.name:
+                    is_src_tbl = False
+                src_tbl_exists = src_tbl_exists or is_src_tbl
+            except:
+                pass
+
+        if kwargs.get("job_mode", JobMode.BATCH) == JobMode.BATCH:
+            if not (dual_exists or src_tbl_exists):
+                raise InvalidParameterError("Query must select from `DUAL` table or provided source table at least once." \
+                    " `DUAL` table represents the processing table. All tables except `DUAL` are read in batch mode."
+                )
+        else:
+            if not dual_exists:
                 raise InvalidParameterError("Query must select from `DUAL` table at least once." \
-                    " `DUAL` table represents the main table. All tables except `DUAL` are read in batch mode."
+                    " `DUAL` table represents the processing table. All tables except `DUAL` are read in batch mode."
                 )
             
         return select_exp
@@ -115,7 +118,7 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
                 if source.dialect == "kafka":
                     fetch_query = origin_table
                 else:
-                    fetch_query = exp.select('*').from_(origin_table)
+                    fetch_query = exp.select('*').from_(exp.to_table(origin_table, dialect=source.dialect))
                     if predicate:
                         fetch_query = fetch_query.where(predicate)
 

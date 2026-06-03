@@ -5,6 +5,7 @@ import typing as t
 import logging
 from sqlglot import exp
 from sqlmesh.core.dialect import to_schema
+from sqlmesh.core.engine_adapter.base import EngineAdapter
 from sqlmesh.core.engine_adapter.spark import SparkEngineAdapter as SQLMeshSparkEngineAdapter
 from sqlmesh.core.engine_adapter.shared import (
     DataObject,
@@ -35,6 +36,14 @@ class SparkEngineAdapter(
         # Disable WAP to prevent dummy inserting when _create_table
         return False
     
+    def ping(self) -> None:
+        try:
+            self._execute(exp.select("1").sql(dialect=self.dialect))
+            if hasattr(self, "delegate_adapter") and isinstance(self.delegate_adapter, EngineAdapter):
+                t.cast("EngineAdapter", self.delegate_adapter).ping()
+        finally:
+            self._connection_pool.close_cursor()
+    
     def _get_data_objects(
         self, schema_name: SchemaName, object_names: t.Optional[t.Set[str]] = None
     ) -> t.List[DataObject]:
@@ -44,6 +53,8 @@ class SparkEngineAdapter(
             sql += f" IN {schema_name}"
         pattern = "*" if object_names is None else "|".join(object_names)
         sql += f" LIKE '{pattern}'"
+        
+        results = None
         try:
             # TODO: `DESCRIBE TABLE EXTENDED` for `Type:`
             results = (
@@ -55,14 +66,44 @@ class SparkEngineAdapter(
         # without a Spark Session. In addition Databricks would need to be updated to handle it's own exceptions.
         # Therefore just doing except Exception for now.
         except Exception as e:
-            if "EXTENDED is not supported" in str(e):
-                results = (
-                    self.fetch_pyspark_df("SHOW TABLES" + sql).collect()
-                    if self._use_spark_session
-                    else self.fetchdf("SHOW TABLES" + sql).to_dict("records")
-                )
+            err_msg = str(e)
+            if "EXTENDED is not supported" in err_msg:
+                try:
+                    results = (
+                        self.fetch_pyspark_df("SHOW TABLES" + sql).collect()
+                        if self._use_spark_session
+                        else self.fetchdf("SHOW TABLES" + sql).to_dict("records")
+                    )
+                except Exception as inner_e:
+                    inner_msg = str(inner_e)
+                    # Catch HadoopCatalog S3 Namespace bug
+                    if "NoSuchNamespace" in inner_msg or "Namespace does not exist" in inner_msg:
+                        results = None 
+                    else:
+                        return []
+            elif "NoSuchNamespace" in err_msg or "Namespace does not exist" in err_msg:
+                results = None
             else:
                 return []
+            
+        # Fallback for S3A / HadoopCatalog quirk: 
+        # S3 has no directories, so `SHOW TABLES IN namespace` fails if the 0-byte directory marker is missing.
+        if results is None:
+            results = []
+            if object_names:
+                for obj_name in object_names:
+                    # We can only safely probe concrete table names, not wildcards
+                    if "*" in obj_name or "|" in obj_name:
+                        continue
+                    
+                    full_name = f"{schema_name}.{obj_name}" if schema_name else obj_name
+                    try:
+                        # Direct check using DESCRIBE, which bypasses Iceberg's fs.isDirectory() check
+                        self.execute(f"DESCRIBE {full_name}")
+                        results.append({"tableName": obj_name, "namespace": schema_name, "isTemporary": False})
+                    except Exception:
+                        pass
+
         data_objects = []
         catalog = self.get_current_catalog()
         for row in results:  # type: ignore

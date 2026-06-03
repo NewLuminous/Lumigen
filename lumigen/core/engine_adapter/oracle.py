@@ -1,10 +1,11 @@
 """Contains OracleEngineAdapter."""
 
 from __future__ import annotations
-
 import typing as t
 
+import re
 from sqlglot import exp
+from sqlglot.dialects.oracle import Oracle
 from sqlglot.errors import ParseError
 import pandas as pd
 
@@ -136,7 +137,7 @@ class OracleEngineAdapter(
     ) -> t.Dict[str, exp.DataType]:
         """Fetches column names and types for the target table."""
 
-        table = exp.to_table(table_name)
+        table = exp.to_table(table_name, dialect=self.dialect)
 
         sql = (
             exp.select(
@@ -192,7 +193,7 @@ class OracleEngineAdapter(
         return column_dtype_mapping
     
     def table_exists(self, table_name: TableName) -> bool:
-        table = exp.to_table(table_name)
+        table = exp.to_table(table_name, dialect=self.dialect)
 
         sql = (
             exp.select("1")
@@ -230,7 +231,7 @@ class OracleEngineAdapter(
             super().replace_query(table_name, query_or_df, target_columns_to_types, table_description, column_descriptions, source_columns, supports_replace_table_override, **kwargs)
             return
         
-        target_table = exp.to_table(table_name)
+        target_table = exp.to_table(table_name, dialect=self.dialect)
         #target_table = f"{target_table.sql(dialect=self.dialect, identify=True)}"
         target_columns_to_types = target_columns_to_types or columns_to_types_from_df(query_or_df)
         target_columns_to_types = target_columns_to_types or self.columns(target_table)
@@ -257,7 +258,7 @@ class OracleEngineAdapter(
             super().insert_append(table_name, query_or_df, target_columns_to_types, track_rows_processed, source_columns)
             return
         
-        target_table = exp.to_table(table_name)
+        target_table = exp.to_table(table_name, dialect=self.dialect)
         target_columns_to_types = target_columns_to_types or columns_to_types_from_df(query_or_df)
         target_columns_to_types = target_columns_to_types or self.columns(table_name)
         placeholder_map = self._build_placeholder_map(target_columns_to_types)
@@ -419,7 +420,7 @@ class OracleEngineAdapter(
             parameters = DataFrameConverter.to_records(query)
             using = "DUAL"
         
-        this = exp.alias_(exp.to_table(target_table), alias=MERGE_TARGET_ALIAS, table=True)
+        this = exp.alias_(exp.to_table(target_table, dialect=self.dialect), alias=MERGE_TARGET_ALIAS, table=True)
         if not isinstance(on, exp.Paren):
             on = exp.Paren(this=on)
 
@@ -469,6 +470,32 @@ class OracleEngineAdapter(
                     self._record_execution_stats(sql, int(rowcount))
                 except (TypeError, ValueError):
                     return
+                
+    def _identifier_needs_quoting(self, identifier: t.Union[str, exp.Identifier]) -> bool:
+        if isinstance(identifier, exp.Identifier):
+            identifier = identifier.sql(self.dialect)
+
+        if not re.match(r"^[A-Z][A-Z0-9_$#]*$", identifier):
+            return True
+
+        if identifier.upper() in Oracle.Tokenizer.KEYWORDS:
+            return True
+        
+        return False
+    
+    def get_qualified_table_name(self,
+                                 table_name: t.Union[str, exp.Identifier],
+                                 schema_name: t.Optional[t.Union[str, exp.Identifier]]=None,
+                                 catalog: t.Optional[t.Union[str, exp.Identifier]]=None) -> str:
+        if not table_name:
+            raise ValueError("table_name cannot be empty.")
+        
+        table_exp = exp.Table(
+            this=exp.to_identifier(table_name, quoted=self._identifier_needs_quoting(table_name)),
+            db=exp.to_identifier(schema_name, quoted=self._identifier_needs_quoting(schema_name)) if schema_name else None,
+            catalog=exp.to_identifier(catalog, quoted=self._identifier_needs_quoting(catalog)) if catalog else None,
+        )
+        return table_exp.sql(dialect=self.dialect)
     
     def _get_data_objects(
         self, schema_name: SchemaName, object_names: t.Optional[t.Set[str]] = None

@@ -162,7 +162,7 @@ class AuditManager:
                 "source_path",
                 "source_query"
             )
-            .from_(self.STATE_TABLE)
+            .from_(exp.to_table(self.STATE_TABLE))
             .where(exp.column("job_id").eq(exp.Literal.string(job_id)))
         )
         result = self.adapter.fetchone(query, quote_identifiers=True)

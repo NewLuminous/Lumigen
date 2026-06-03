@@ -1,9 +1,11 @@
 """Contains PostgresEngineAdapter."""
 
 import typing as t
+import re
 
 from sqlglot import exp
 from sqlglot.helper import ensure_list
+from sqlglot.dialects.postgres import Postgres
 from sqlmesh.core.engine_adapter.postgres import PostgresEngineAdapter as SQLMeshPostgresEngineAdapter
 from sqlmesh.core.engine_adapter.shared import (
     DataObject,
@@ -41,6 +43,32 @@ class PostgresEngineAdapter(
                         node.replace(node.this)
 
         super().execute(expressions, ignore_unsupported_errors, quote_identifiers, track_rows_processed, **kwargs)
+
+    def _identifier_needs_quoting(self, identifier: t.Union[str, exp.Identifier]) -> bool:
+        if isinstance(identifier, exp.Identifier):
+            identifier = identifier.sql(self.dialect)
+
+        if not re.match(r"^[a-z_][a-z0-9_$]*$", identifier):
+            return True
+
+        if identifier.upper() in Postgres.Tokenizer.KEYWORDS:
+            return True
+        
+        return False
+    
+    def get_qualified_table_name(self,
+                                 table_name: t.Union[str, exp.Identifier],
+                                 schema_name: t.Optional[t.Union[str, exp.Identifier]]=None,
+                                 catalog: t.Optional[t.Union[str, exp.Identifier]]=None) -> str:
+        if not table_name:
+            raise ValueError("table_name cannot be empty.")
+        
+        table_exp = exp.Table(
+            this=exp.to_identifier(table_name, quoted=self._identifier_needs_quoting(table_name)),
+            db=exp.to_identifier(schema_name, quoted=self._identifier_needs_quoting(schema_name)) if schema_name else None,
+            catalog=exp.to_identifier(catalog, quoted=self._identifier_needs_quoting(catalog)) if catalog else None,
+        )
+        return table_exp.sql(dialect=self.dialect)
 
     def get_all_data_objects(self, keyword: str="") -> t.List[DataObject]:
         keyword = keyword.strip()

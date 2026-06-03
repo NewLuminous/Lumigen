@@ -6,6 +6,7 @@ import os
 import importlib
 import sys
 import typing as t
+from enum import Enum
 from functools import partial
 from pydantic import Field, field_validator, model_validator
 from pydantic_core import from_json
@@ -182,8 +183,6 @@ class ConnectionConfig(abc.ABC, BaseConfig):
     def get_address(self) -> t.Optional[str]:
         """The address for this connection"""
         addr_str = ""
-        if hasattr(self, "bootstrap_servers"):
-            addr_str += self.bootstrap_servers
         if hasattr(self, "host"):
             addr_str += self.host
         if hasattr(self, "port"):
@@ -676,8 +675,22 @@ class MSSQLConnectionConfig(ConnectionConfig):
         return {"catalog_support": CatalogSupport.REQUIRES_SET_CATALOG}
     
 
+class IcebergCatalogType(Enum):
+    HIVE = "hive"
+    HADOOP = "hadoop"
+    REST = "rest"
+    GLUE = "glue"
+    JDBC = "jdbc"
+    SQL = "sql"
+    NESSIE = "nessie"
+    DYNAMODB = "dynamodb"
+    BIGQUERY = "bigquery"
+
+    def __str__(self) -> str:
+        return self.value
+
 class IcebergConnectionConfig(ConnectionConfig):
-    catalog_type: Literal["hive", "hadoop", "rest", "glue", "jdbc", "nessie"]
+    catalog_type: t.Optional[str] = None
     warehouse: t.Optional[str] = None
     uri: t.Optional[str] = None
     catalog_properties: t.Optional[t.Dict[str, t.Any]] = {}
@@ -691,6 +704,21 @@ class IcebergConnectionConfig(ConnectionConfig):
     type_: Literal["iceberg"] = Field(alias="type", default="iceberg")
 
     _engine_import_validator = _get_engine_import_validator("pyiceberg", "iceberg")
+
+    @field_validator("catalog_type")
+    @classmethod
+    def _validate_catalog_type(cls, v: t.Optional[str]) -> t.Optional[str]:
+        if v is None:
+            return v
+        
+        # Extract allowed string values from the IcebergCatalogType Enum
+        allowed_types = {item.value for item in IcebergCatalogType}
+        v_lower = v.lower()
+        if v_lower not in allowed_types:
+            raise ValueError(
+                f"catalog_type '{v}' is invalid. Must be one of: {', '.join(sorted(allowed_types))}"
+            )
+        return v_lower
 
     @property
     def _connection_kwargs_keys(self) -> t.Set[str]:
@@ -712,6 +740,12 @@ class IcebergConnectionConfig(ConnectionConfig):
         from engines.iceberg.client import connect
 
         return connect
+    
+    def get_address(self) -> t.Optional[str]:
+        if self.uri:
+            return self.uri
+        else:
+            return self.warehouse
 
 
 class KafkaConnectionConfig(ConnectionConfig):
@@ -745,6 +779,9 @@ class KafkaConnectionConfig(ConnectionConfig):
         from engines.kafka.kafka_client import connection
 
         return connection
+    
+    def get_address(self) -> t.Optional[str]:
+        return self.bootstrap_servers
 
 
 class SparkConnectionConfig(ConnectionConfig):

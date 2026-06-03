@@ -64,10 +64,12 @@ class Config(BaseConfig):
     audit_store: t.Optional[SerializableConnectionConfig] = None # type: ignore
     transformation_pipeline: t.Optional[t.List[TransformationConfig]] = []
     job_properties: t.Dict[str, t.Any] = {}
+    env: t.Dict[str, str] = {}
 
     _FIELD_UPDATE_STRATEGY: t.ClassVar[t.Dict[str, UpdateStrategy]] = {
         "transformation_pipeline": UpdateStrategy.REPLACE,
         "job_properties": UpdateStrategy.KEY_UPDATE,
+        "env": UpdateStrategy.KEY_UPDATE,
     }
 
     _connection_config_validator = _connection_config_field_validator

@@ -150,11 +150,11 @@ class SparkJDBCEngineAdapter(SparkEngineAdapter):
         # NOTE: MERGE INTO TABLE is not supported temporarily by current version of vanilla Spark (3.3.3)
         try:
             # --- PRIMARY STRATEGY: Staging Table ---
-            target_table_exp = exp.to_table(target_table)
+            target_table_exp = exp.to_table(target_table, dialect=self.dialect)
 
             # Create a unique temp table name
             temp_table_name = f"__temp_lumigen_{target_table_exp.name}_{random_id(short=True)}"
-            temp_table_exp = exp.to_table(temp_table_name, db=target_table_exp.args.get("db"), catalog=target_table_exp.args.get("catalog"))
+            temp_table_exp = exp.table_(temp_table_name, db=target_table_exp.args.get("db"), catalog=target_table_exp.args.get("catalog"))
             try:
                 # Stage the data frame into a temp table in the target DB
                 self.replace_query(temp_table_exp, df, target_columns_to_types=target_columns_to_types, source_columns=source_columns)
@@ -249,3 +249,12 @@ class SparkJDBCEngineAdapter(SparkEngineAdapter):
             return df
         
         return df.selectExpr(*select_expressions)
+    
+    def get_qualified_table_name(self,
+                                 table_name: t.Union[str, exp.Identifier],
+                                 schema_name: t.Optional[t.Union[str, exp.Identifier]]=None,
+                                 catalog: t.Optional[t.Union[str, exp.Identifier]]=None) -> str:
+        try:
+            return self.delegate_adapter.get_qualified_table_name(table_name, schema_name, catalog)
+        except:
+            return super().get_qualified_table_name(table_name, schema_name, catalog)

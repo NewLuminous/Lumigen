@@ -1,0 +1,38 @@
+source:
+  type: iceberg
+  catalog_type: dynamodb
+  warehouse: arn:aws:s3tables:<Region>:<accountID>:bucket/<bucketname>
+  catalog_properties:
+    cache-enabled: "true"
+    dynamodb.endpoint: http://<DBHost>:8000
+    dynamodb.table-name: iceberg-catalog
+    s3.endpoint: s3.<Region>.amazonaws.com
+    s3.access-key-id: xxxxxxxxxxxxxxxxx
+    s3.secret-access-key: xxxxxxxxxxxxxxxxx
+    client.region: <Region>
+
+sink:
+  type: iceberg
+  catalog_type: bigquery
+  warehouse: s3a://<bucketname>/warehouse
+  catalog_properties:
+    gcp.bigquery.project-id: your-gcp-project-id
+    gcp.bigquery.location: us-east1
+    gcp.bigquery.credential-file: /tmp/application_credentials.json
+  hadoop.config:
+    fs.s3a.endpoint: s3.cn-north-1.amazonaws.com.cn
+    fs.s3a.access.key: xxxxxxxxxxxxxxxxx
+    fs.s3a.secret.key: xxxxxxxxxxxxxxxxx
+    fs.defaultFS: s3a://<bucketname>
+
+executor:
+  type: spark
+  app_name: batch iceberg
+  config:
+    spark.scheduler.mode: FAIR
+
+job_properties:
+  source_table: dynamodb_catalog.user_data
+  sink_table: bigquery_catalog.user_data
+  data_save_mode: MERGE
+  sink_key: user_id

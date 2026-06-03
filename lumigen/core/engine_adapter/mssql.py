@@ -55,9 +55,9 @@ class MSSQLEngineAdapter(
             .from_(exp.table_("TABLES", db="INFORMATION_SCHEMA"))
         )
         if table_pattern:
-            query = query.where(exp.column("TABLE_NAME").ilike(table_pattern))
+            query = query.where(exp.column("TABLE_NAME").like(table_pattern))
         if schema_pattern:
-            query = query.where(exp.column("TABLE_SCHEMA").ilike(schema_pattern))
+            query = query.where(exp.column("TABLE_SCHEMA").like(schema_pattern))
         dataframe = self.fetchdf(query)
         return [
             DataObject(

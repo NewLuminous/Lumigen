@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 from config.environment import settings
 from core.config.loader import load_config
+from core.config.job import JobPropertiesModel
 from core.engine_context import SQLContextManager
 from core.runner import JobRunner, get_runner
 from utils.processes import submit_job
@@ -58,11 +59,13 @@ def main():
     arg_parser.add_argument("--spark-driver", action="store_true", help=argparse.SUPPRESS)
     
     args = arg_parser.parse_args()
+    job_cfg = load_config(path=args.config)
+    for env_var in job_cfg.env:
+        os.environ[env_var] = job_cfg.env[env_var]
 
     if args.spark_driver:
         # --- SPARK DRIVER MODE ---
         logger.info("Running in Spark Driver mode.")
-        job_cfg = load_config(path=args.config)
         with SQLContextManager.get_instance() as manager:
             runner = SparkJobRunner(job_cfg)
             runner.run()
@@ -72,12 +75,15 @@ def main():
     exit_code = 0
     try:
         logger.info("Running in Launcher mode.")
-        job_cfg = load_config(path=args.config)
         with SQLContextManager.get_instance() as manager:
             runner = get_runner(job_cfg)
 
             # Check the type of the runner to decide how to execute it
             if isinstance(runner, SparkJobRunner):
+                spark_submit_env = JobPropertiesModel(**job_cfg.job_properties).spark_submit_env
+                for env_var in spark_submit_env:
+                    os.environ[env_var] = spark_submit_env[env_var]
+
                 # Spark jobs should be submitted as a separate process with the --spark-driver flag.
                 rc = run_spark_job(runner, args.config)
                 exit_code = rc if rc is not None else 1

@@ -44,6 +44,7 @@ class SparkClickHouseEngineAdapter(SparkEngineAdapter):
         """
         super(SparkClickHouseEngineAdapter, self).__init__(connection_factory_or_pool, **kwargs)
         self.delegate_adapter = delegate_adapter
+        self.DIALECT = delegate_adapter.dialect
 
     def _create_table_from_source_queries(
         self,

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from sqlglot import exp, parse_one
 from sqlglot.dialects.dialect import Dialects
-from pyiceberg.catalog import load_catalog, WAREHOUSE_LOCATION, URI
+from pyiceberg.catalog import WAREHOUSE_LOCATION, URI
 from pyiceberg.io.pyarrow import _pyarrow_to_schema_without_ids
 from pyiceberg.schema import assign_fresh_schema_ids
 from pyiceberg.table import upsert_util, ALWAYS_TRUE
@@ -22,6 +22,7 @@ if t.TYPE_CHECKING:
     from pyiceberg.expressions import BooleanExpression
     from duckdb import DuckDBPyConnection
 
+from engines.iceberg.catalog import load_catalog
 from engines.iceberg.parser import IcebergSQLParser
 from utils.decorators import TimeoutProxy
 from utils.sql import TablePushdownExtractor
@@ -406,6 +407,16 @@ class IcebergCursor:
             self._execute_show(query)
             return
 
+        # CREATE DATABASE
+        if (isinstance(parsed_exp, exp.Create) and parsed_exp.kind == "DATABASE") \
+        or (isinstance(parsed_exp, exp.Command) and str(parsed_exp.expression).strip().upper().startswith("DATABASE")):
+            create_meta = IcebergSQLParser.parse_create_database(query, self.dialect)
+            if create_meta.if_not_exists:
+                self._catalog.create_namespace_if_not_exists(create_meta.namespace, properties=create_meta.properties)
+            else:
+                self._catalog.create_namespace(create_meta.namespace, properties=create_meta.properties)
+            return
+
         # CREATE TABLE ... AS SELECT
         if isinstance(parsed_exp, exp.Create) and isinstance(parsed_exp.expression, exp.Select):
             is_ctas = True
@@ -588,6 +599,8 @@ class IcebergCursor:
             drop_func = self._catalog.drop_table
         elif drop_exp.kind == "VIEW":
             drop_func = self._catalog.drop_view
+        elif drop_exp.kind in ("DATABASE", "SCHEMA"):
+            drop_func = self._catalog.drop_namespace
         else:
             raise NotImplementedError(f"DROP {drop_exp.kind} unsupported.")
         
@@ -993,8 +1006,11 @@ class IcebergCursor:
         self._register_tables_for_ast(select_exp)
         self._last_df = self._duckdb_conn.execute(select_exp.sql(Dialects.DUCKDB))
 
-    def _execute_describe(self, parsed_exp: exp.Describe) -> None:
-        target_table = IcebergSQLParser.extract_table_name(parsed_exp, dialect=self.dialect)
+    def _execute_describe(self, describe_exp: exp.Describe) -> None:
+        if describe_exp.args.get("kind") and not describe_exp.args["kind"] == "TABLE":
+            raise NotImplementedError(f'DESCRIBE {describe_exp.args["kind"]} unsupported.')
+
+        target_table = IcebergSQLParser.extract_table_name(describe_exp, dialect=self.dialect)
         iceberg_tbl = self._load_table(target_table)
         schema = iceberg_tbl.schema()
 
@@ -1026,53 +1042,77 @@ class IcebergCursor:
     def _execute_show(self, query: str) -> None:
         # Fallback to MySQL dialect for consistent SHOW command parsing 
         parsed_exp = parse_one(query, dialect=Dialects.MYSQL)
-        if isinstance(parsed_exp, exp.Show) and str(parsed_exp.this).upper() == "TABLES":
-            namespaces = set()
-            db_lit: t.Optional[exp.Literal] = parsed_exp.args["db"]
-            db_lit.set("quoted", False)
-            if db_lit:
-                namespaces.add(db_lit.sql())
-            else:
-                namespaces.update(ns[0] for ns in self._catalog.list_namespaces() if ns)
-            
-            table_names = []
-            table_schemas = []
-            table_types = []
-            for ns in namespaces:
-                for table in self._catalog.list_tables(ns):
-                    table_names.append(table[-1])
-                    table_schemas.append(".".join(table[:-1]))
-                    table_types.append("TABLE")
-                try:
-                    for view in self._catalog.list_views(ns):
-                        table_names.append(view[-1])
-                        table_schemas.append(".".join(view[:-1]))
-                        table_types.append("VIEW")
-                except NotImplementedError:
-                    pass
-            arrow_df = pa.Table.from_arrays([
-                pa.array(table_names, type=pa.string()),
-                pa.array(table_schemas, type=pa.string()),
-                pa.array(table_types, type=pa.string())
-            ], names=["table_name", "table_schema", "table_type"])
+        if isinstance(parsed_exp, exp.Show):
+            if str(parsed_exp.this).upper() == "DATABASES":
+                namespaces = [ns[0] for ns in self._catalog.list_namespaces() if ns]
+                arrow_df = pa.Table.from_arrays([
+                    pa.array(namespaces, type=pa.string())
+                ], names=["database"])
 
-            temp_view = "__iceberg_show_tables"
-            self._duckdb_conn.register(temp_view, arrow_df)
-            self._registered_tables.add(temp_view)
+                temp_view = "__iceberg_show_databases"
+                self._duckdb_conn.register(temp_view, arrow_df)
+                self._registered_tables.add(temp_view)
 
-            select_exp = (
-                exp.select("*").from_(exp.table_(temp_view))
-            )
-            like_lit = parsed_exp.args["like"]
-            if like_lit:
-                select_exp = select_exp.where(exp.column("table_name").ilike(like_lit))
-            where_exp: exp.Where = parsed_exp.args["where"]
-            if where_exp:
-                select_exp = select_exp.where(where_exp.this)
-  
-            self._last_df = self._duckdb_conn.execute(select_exp.sql(Dialects.DUCKDB))
-        else:
-            raise ValueError(f"Unsupported SHOW command: {query}")
+                select_exp = (
+                    exp.select("*").from_(exp.table_(temp_view))
+                )
+                like_lit = parsed_exp.args["like"]
+                if like_lit:
+                    select_exp = select_exp.where(exp.column("database").ilike(like_lit))
+                where_exp: exp.Where = parsed_exp.args["where"]
+                if where_exp:
+                    select_exp = select_exp.where(where_exp.this)
+    
+                self._last_df = self._duckdb_conn.execute(select_exp.sql(Dialects.DUCKDB))
+                return
+            elif str(parsed_exp.this).upper() == "TABLES":
+                namespaces = set()
+                db_lit: t.Optional[exp.Literal] = parsed_exp.args["db"]
+                db_lit.set("quoted", False)
+                if db_lit:
+                    namespaces.add(db_lit.sql())
+                else:
+                    namespaces.update(ns[0] for ns in self._catalog.list_namespaces() if ns)
+                
+                table_names = []
+                table_schemas = []
+                table_types = []
+                for ns in namespaces:
+                    for table in self._catalog.list_tables(ns):
+                        table_names.append(table[-1])
+                        table_schemas.append(".".join(table[:-1]))
+                        table_types.append("TABLE")
+                    try:
+                        for view in self._catalog.list_views(ns):
+                            table_names.append(view[-1])
+                            table_schemas.append(".".join(view[:-1]))
+                            table_types.append("VIEW")
+                    except NotImplementedError:
+                        pass
+                arrow_df = pa.Table.from_arrays([
+                    pa.array(table_names, type=pa.string()),
+                    pa.array(table_schemas, type=pa.string()),
+                    pa.array(table_types, type=pa.string())
+                ], names=["table_name", "table_schema", "table_type"])
+
+                temp_view = "__iceberg_show_tables"
+                self._duckdb_conn.register(temp_view, arrow_df)
+                self._registered_tables.add(temp_view)
+
+                select_exp = (
+                    exp.select("*").from_(exp.table_(temp_view))
+                )
+                like_lit = parsed_exp.args["like"]
+                if like_lit:
+                    select_exp = select_exp.where(exp.column("table_name").ilike(like_lit))
+                where_exp: exp.Where = parsed_exp.args["where"]
+                if where_exp:
+                    select_exp = select_exp.where(where_exp.this)
+    
+                self._last_df = self._duckdb_conn.execute(select_exp.sql(Dialects.DUCKDB))
+                return
+
+        raise ValueError(f"Unsupported SHOW command: {query}")
         
     def fetchone(self) -> t.Optional[t.Tuple]:
         return self._last_df.fetchone() if self._last_df else None
@@ -1138,6 +1178,20 @@ class IcebergConnection:
     def cursor(self, flush_threshold_bytes: t.Optional[int] = None) -> IcebergCursor:
         threshold = flush_threshold_bytes or self.DEFAULT_FLUSH_THRESHOLD_BYTES
         return IcebergCursor(catalog=self.catalog, flush_threshold_bytes=threshold)
+    
+    def commit(self) -> None:
+        """
+        Satisfies PEP-249 DB-API requirements for Pandas.
+        Note: Actual WAP transactions in this engine are managed and committed locally by the IcebergCursor.
+        """
+        pass
+
+    def rollback(self) -> None:
+        """
+        Satisfies PEP-249 DB-API requirements for Pandas error-handling.
+        Note: Actual WAP rollbacks are handled locally by the IcebergCursor.
+        """
+        pass
 
     def close(self) -> None:
         if self._catalog_proxy:

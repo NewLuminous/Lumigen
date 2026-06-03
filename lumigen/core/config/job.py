@@ -6,6 +6,9 @@ from enum import Enum
 from sqlglot import exp
 from sqlmesh.core.config.base import BaseConfig
 
+if t.TYPE_CHECKING:
+    from sqlglot import DialectType
+
 from utils.sql import dialect_insensitive_tbl_name, extract_main_table
 from utils.errors import ConfigError
 
@@ -129,8 +132,8 @@ class JobSourceRelatedFields(BaseModel):
         
         return data
     
-    def get_source_path(self):
-        return self.source_path or extract_main_table(self.source_query)
+    def get_source_path(self, dialect: DialectType = None):
+        return self.source_path or extract_main_table(self.source_query, dialect=dialect)
     
     def build_source_expression(self, dialect: t.Optional[str] = None) -> t.Union[exp.Select, str]:
         """
@@ -231,6 +234,8 @@ class JobPropertiesModel(
     """Whether the task is in BATCH or STREAMING mode."""
     spark_submit_options: t.Optional[t.Dict[str, CliOptionValue]] = {}
     """A dictionary of parameters when submitting a Spark application using the `spark-submit` command."""
+    spark_submit_env: t.Optional[t.Dict[str, str]] = {}
+    """Environment variables to set when running the Spark application."""
 
     @model_validator(mode='before')
     @classmethod

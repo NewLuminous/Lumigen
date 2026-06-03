@@ -1,7 +1,8 @@
 from __future__ import annotations
 import typing as t
+import re
 from dataclasses import dataclass
-from sqlglot import exp
+from sqlglot import exp, parse_one
 
 from pyiceberg.schema import Schema
 from pyiceberg.types import NestedField
@@ -29,6 +30,12 @@ from utils.sql import extract_main_table
 
 
 @dataclass
+class CreateDatabaseMetadata:
+    namespace: str
+    properties: t.Dict[str, str]
+    if_not_exists: bool
+
+@dataclass
 class CreateTableMetadata:
     table_name: str
     schema: Schema
@@ -49,6 +56,51 @@ class IcebergSQLParser:
         """
         unquoted_name = extract_main_table(parsed_exp, dialect=dialect, quoted=False).lower()
         return unquoted_name.lower() if lowercase else unquoted_name
+    
+    @staticmethod
+    def parse_create_database(query: str, dialect: DialectType) -> CreateDatabaseMetadata:
+        properties = {}
+        
+        if "WITH DBPROPERTIES" in query.upper():
+            # Extract database properties
+            dbprops_match = re.search(r'(?i)WITH\s+DBPROPERTIES\s*\((.*?)\)', query, flags=re.DOTALL)
+            if dbprops_match:
+                props_str = dbprops_match.group(1)
+                # Match strict 'key'='value' or "key"="value" formats 
+                kv_pairs = re.findall(r"""(['"])(.*?)\1\s*=\s*(['"])(.*?)\3""", props_str)
+                for pair in kv_pairs:
+                    properties[pair[1]] = pair[3]
+            
+            # Remove WITH DBPROPERTIES from query to ensure sqlglot AST parsing doesn't crash
+            query = re.sub(r'(?i)WITH\s+DBPROPERTIES\s*\(.*?\)', '', query, flags=re.DOTALL)
+
+        create_exp = parse_one(query, dialect=dialect)
+        
+        if isinstance(create_exp, exp.Command) and str(create_exp.expression).upper().startswith("DATABASE"):
+            parts = str(create_exp.expression).split()
+            namespace = parts[1]
+            if_not_exists = "IF NOT EXISTS" in query.upper()
+        elif isinstance(create_exp, exp.Create) and str(create_exp.args.get("kind", "")).upper() in ("DATABASE", "SCHEMA"):
+            namespace = IcebergSQLParser.extract_table_name(create_exp.this, dialect, lowercase=False)
+            if_not_exists = bool(create_exp.args.get("exists"))
+            
+            properties_exp = t.cast(exp.Properties, create_exp.args.get("properties"))
+            if properties_exp:
+                for property_exp in properties_exp.expressions:
+                    if isinstance(property_exp, exp.LocationProperty):
+                        properties["location"] = t.cast("exp.Literal", property_exp.this).to_py()
+                    elif "value" in property_exp.args:
+                        key = t.cast("exp.Literal", property_exp.this).name
+                        value = t.cast("exp.Literal", property_exp.args["value"]).name
+                        properties[key] = value
+        else:
+            raise ValueError(f"Expected a CREATE DATABASE statement, got: {query}")
+
+        return CreateDatabaseMetadata(
+            namespace=namespace,
+            properties=properties,
+            if_not_exists=if_not_exists,
+        )
 
     @staticmethod
     def parse_create_table(create_exp: exp.Create, dialect: DialectType, inferred_schema: t.Optional[Schema] = None) -> CreateTableMetadata:
