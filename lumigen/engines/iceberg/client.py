@@ -1068,8 +1068,8 @@ class IcebergCursor:
             elif str(parsed_exp.this).upper() == "TABLES":
                 namespaces = set()
                 db_lit: t.Optional[exp.Literal] = parsed_exp.args["db"]
-                db_lit.set("quoted", False)
                 if db_lit:
+                    db_lit.set("quoted", False)
                     namespaces.add(db_lit.sql())
                 else:
                     namespaces.update(ns[0] for ns in self._catalog.list_namespaces() if ns)
