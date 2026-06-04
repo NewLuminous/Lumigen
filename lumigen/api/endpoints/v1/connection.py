@@ -1,5 +1,6 @@
 from __future__ import annotations
 import typing as t
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -15,6 +16,8 @@ from utils.sql import dialect_insensitive_tbl_name
 from api.enums import DataObjectType
 from api.schemas import parse_connection, SchemaField, SchemaMappingRequest, ConnectionColumnMapping
 from api.dependencies import get_custom_executor
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter()
@@ -38,7 +41,8 @@ async def list_data_objects(conn_config: t.Dict[str, t.Any],
     engine_adapter = t.cast("EngineAdapterMixin", conn.create_engine_adapter())
     try:
         data_objects = await loop.run_in_executor(executor, engine_adapter.get_all_data_objects, keyword)
-    except:
+    except Exception as e:
+        logger.error(f"Error fetching data objects: {e}")
         return []
 
     tbl_or_views = []

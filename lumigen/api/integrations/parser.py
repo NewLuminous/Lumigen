@@ -69,7 +69,11 @@ class LogParser:
 
             # Skip stack frame lines until we find the actual exception message
             if not passed_initial_python_file_trace and line.startswith(self.PYTHON_FILE_LINE_PREFIX):
-                i += 2
+                i += 1
+                # If the next line is the corresponding source code snippet (starts with 4 spaces), skip it too.
+                # Cython tracebacks do not have these, so we won't skip the next `  File ` line by accident.
+                if i < len(current_exception_lines) and current_exception_lines[i].startswith("    "):
+                    i += 1
                 continue
             
             # The first line not starting with "  File " (or "File ") is the start of the exception type/message
