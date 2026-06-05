@@ -18,6 +18,7 @@ from kubernetes.client import CustomObjectsApi, V1ContainerStatus, V1Job, V1JobC
 from kubernetes.client.rest import ApiException
 
 if t.TYPE_CHECKING:
+    from urllib3 import HTTPResponse
     from core.config.root import Config
 
 from core.config.job import JobMode
@@ -432,10 +433,13 @@ class KubernetesAdapter(JobManagerAdapter):
                 raise HTTPException(status_code=400, detail=f"Invalid 'since' timestamp: {since}. Must be a valid UNIX timestamp.")
         
         try:
-            return self.core_v1_api.read_namespaced_pod_log(
+            response: HTTPResponse = self.core_v1_api.read_namespaced_pod_log(
                 name=pod.metadata.name, namespace=self.namespace,
-                tail_lines=tail, since_seconds=since_seconds_param, timestamps=timestamps
+                tail_lines=tail, since_seconds=since_seconds_param, timestamps=timestamps,
+                _preload_content=False,
             )
+            raw_bytes = response.data
+            return raw_bytes.decode('utf-8', errors='replace')
         except ApiException as e:
             error_detail = f"Could not retrieve logs for job '{id}': {e.reason}"
             if e.status == 400: # Bad Request, e.g., pod is still creating

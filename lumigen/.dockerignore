@@ -3,17 +3,17 @@
 **/.kube/
 
 # Exclude local environment configurations
-.env
-.env*
-local_settings.py
+**/.env
+**/.env*
+**/local_settings.py
 
 # Exclude standard development junk
-.git/
-.gitignore
-.idea/
-.vscode/
+**/.git/
+**/.gitignore
+**/.idea/
+**/.vscode/
 **/__pycache__/
 **/*.pyc
 **/*.pyo
 **/*.pyd
-.tmp_spark_conf/
+**/.tmp_spark_conf/
