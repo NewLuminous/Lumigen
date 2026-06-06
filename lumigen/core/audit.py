@@ -10,7 +10,7 @@ if t.TYPE_CHECKING:
 
 from core.config.job import DataLoadMode
 from utils.json import encode_typed_value, decode_typed_value
-from utils.collections import FallbackSet
+from utils.collections import SQLIdentifierSet
 from utils.errors import ConfigError
 
 logger = logging.getLogger(__name__)
@@ -73,7 +73,7 @@ class AuditManager:
         logger.debug(f"Validating schema for existing audit table '{table_name}'.")
         try:
             current_schema = self.adapter.columns(table_name)
-            current_columns = FallbackSet(current_schema.keys())
+            current_columns = SQLIdentifierSet(current_schema.keys())
             
             # This migration logic is additive-only to prevent accidental data loss.
             # It checks for any columns that are expected by the application but are

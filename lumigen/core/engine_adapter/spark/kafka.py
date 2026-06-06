@@ -9,7 +9,7 @@ if t.TYPE_CHECKING:
 
 from core.engine_adapter.spark.base import SparkEngineAdapter
 from core.engine_adapter.kafka import KafkaEngineAdapter
-from utils.collections import FallbackSet
+from utils.collections import SQLIdentifierSet
 from utils.errors import UnsupportedOperationError, MissingColumnError
 
 logger = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ class SparkKafkaEngineAdapter(SparkEngineAdapter, KafkaEngineAdapter):
         if ',' in topic:
             raise ValueError(f"The 'APPEND' operation for Kafka only supports a single topic per call, but got '{topic}'. ")
 
-        df_cols = FallbackSet(c.name for c in df.schema)
+        df_cols = SQLIdentifierSet(c.name for c in df.schema)
         norm_cols = []
         if "key" in df_cols:
             norm_cols.append(f"CAST({df_cols.get('key')} AS STRING) AS key")

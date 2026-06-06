@@ -1,6 +1,6 @@
 from __future__ import annotations
-from .collections import FallbackKeyDict, FallbackSet, merge_dicts, rename_key
+from .collections import SQLIdentifierDict, SQLIdentifierSet, merge_dicts, rename_key
 
 __all__ = [
-    "FallbackKeyDict", "FallbackSet", "merge_dicts", "rename_key",
+    "merge_dicts", "rename_key", "SQLIdentifierDict", "SQLIdentifierSet",
 ]

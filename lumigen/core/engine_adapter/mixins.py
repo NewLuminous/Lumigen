@@ -99,6 +99,9 @@ class FetchStreamMixin(FetchBatchMixin):
         return
     
 class EngineAdapterMixin(EngineAdapter):
+    def identifier_needs_quoting(self, identifier: t.Union[str, exp.Identifier]) -> bool:
+        return False
+
     def get_qualified_table_name(self,
                                  table_name: t.Union[str, exp.Identifier],
                                  schema_name: t.Optional[t.Union[str, exp.Identifier]]=None,
@@ -107,9 +110,9 @@ class EngineAdapterMixin(EngineAdapter):
             raise ValueError("table_name cannot be empty.")
         
         table_exp = exp.Table(
-            this=exp.to_identifier(table_name),
-            db=exp.to_identifier(schema_name) if schema_name else None,
-            catalog=exp.to_identifier(catalog) if catalog else None,
+            this=exp.to_identifier(table_name, quoted=self.identifier_needs_quoting(table_name)),
+            db=exp.to_identifier(schema_name, quoted=self.identifier_needs_quoting(schema_name)) if schema_name else None,
+            catalog=exp.to_identifier(catalog, quoted=self.identifier_needs_quoting(catalog)) if catalog else None,
         )
         if Dialect.get(self.dialect):
             return table_exp.sql(dialect=self.dialect)

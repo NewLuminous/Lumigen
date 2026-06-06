@@ -11,7 +11,7 @@ if t.TYPE_CHECKING:
 from core.config.job import JobMode, DataSaveMode
 from core.engine_adapter.mixins import WatermarkStrategyMixin
 from transformers.streaming import ForeachBatch
-from utils import FallbackSet
+from utils import SQLIdentifierSet
 from utils.dataset import DataFrameConverter, get_columns_name, is_batch_or_stream_empty
 from utils.errors import UnsupportedDataFrameError, ConfigError
 
@@ -110,7 +110,7 @@ def _calculate_max_watermark(df, watermark_field: str) -> t.Any:
     if is_batch_or_stream_empty(df):
         return None
 
-    df_case_insens_cols = FallbackSet(get_columns_name(df))
+    df_case_insens_cols = SQLIdentifierSet(get_columns_name(df))
     if watermark_field not in df_case_insens_cols:
         raise ValueError(
             f"Watermark field '{watermark_field}' not found. "

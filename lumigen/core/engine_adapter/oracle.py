@@ -471,7 +471,7 @@ class OracleEngineAdapter(
                 except (TypeError, ValueError):
                     return
                 
-    def _identifier_needs_quoting(self, identifier: t.Union[str, exp.Identifier]) -> bool:
+    def identifier_needs_quoting(self, identifier: t.Union[str, exp.Identifier]) -> bool:
         if isinstance(identifier, exp.Identifier):
             identifier = identifier.sql(self.dialect)
 
@@ -482,20 +482,6 @@ class OracleEngineAdapter(
             return True
         
         return False
-    
-    def get_qualified_table_name(self,
-                                 table_name: t.Union[str, exp.Identifier],
-                                 schema_name: t.Optional[t.Union[str, exp.Identifier]]=None,
-                                 catalog: t.Optional[t.Union[str, exp.Identifier]]=None) -> str:
-        if not table_name:
-            raise ValueError("table_name cannot be empty.")
-        
-        table_exp = exp.Table(
-            this=exp.to_identifier(table_name, quoted=self._identifier_needs_quoting(table_name)),
-            db=exp.to_identifier(schema_name, quoted=self._identifier_needs_quoting(schema_name)) if schema_name else None,
-            catalog=exp.to_identifier(catalog, quoted=self._identifier_needs_quoting(catalog)) if catalog else None,
-        )
-        return table_exp.sql(dialect=self.dialect)
     
     def _get_data_objects(
         self, schema_name: SchemaName, object_names: t.Optional[t.Set[str]] = None

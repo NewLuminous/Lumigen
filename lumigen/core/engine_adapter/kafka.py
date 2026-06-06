@@ -25,7 +25,7 @@ if t.TYPE_CHECKING:
 from core.config.job import DataLoadMode
 from core.engine_adapter.mixins import EngineAdapterMixin, FetchStreamMixin, QueryBuilderMixin, WatermarkStrategyMixin
 from engines.kafka.kafka_client import MESSAGE_SCHEMA
-from utils import FallbackSet
+from utils import SQLIdentifierSet
 from utils.errors import EngineAdapterError, MissingColumnError, UnsupportedDataFrameError
 from utils.sql import extract_main_table
 
@@ -162,7 +162,7 @@ class KafkaEngineAdapter(
         *args: t.Any, **kwargs: t.Any,
     ) -> None:
         topic_list = [tn.strip() for tn in topics.split(',')]
-        df_case_insens_cols = FallbackSet(df.columns)
+        df_case_insens_cols = SQLIdentifierSet(df.columns)
         if "value" not in df_case_insens_cols:
             raise MissingColumnError("Column named `value` is required in the input DataFrame.")
         

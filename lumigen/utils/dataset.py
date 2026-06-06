@@ -14,7 +14,7 @@ from sqlglot import exp
 if t.TYPE_CHECKING:
     from core._typing import DataFrameType
 
-from utils import FallbackKeyDict
+from utils import SQLIdentifierDict
 from utils.parsing import extract_name_wo_params
 
 
@@ -220,7 +220,7 @@ def get_spark_data_type(data_type: str, data_type_params: t.Optional[t.List[t.An
     return _parse_datatype_string(ddl)
 
 def case_insensitive_column_name_mapping(df: DataFrameType) -> t.Dict[str, str]:
-    col_map = FallbackKeyDict()
+    col_map = SQLIdentifierDict()
     columns = get_columns_name(df)
 
     for c in columns:

@@ -10,7 +10,7 @@ from sqlmesh.core.engine_adapter.base import (
 if t.TYPE_CHECKING:
     from core.job_context import JobContext
 
-from utils import merge_dicts, FallbackSet
+from utils import merge_dicts, SQLIdentifierSet
 from utils.dataset import columns_to_types_from_df, get_columns_name, is_batch_or_stream_empty
 from utils.sql import dialect_insensitive_tbl_name
 from core.config.job import TransformationConfig, DataSaveMode, DataLoadMode, JobMode
@@ -174,7 +174,7 @@ class MicroBatchWriter:
         if self._columns_to_types is None:
             if table_name and self.base.table_exists(table_name):
                 table_columns = self.base.columns(table_name)
-                tbl_col_set = FallbackSet(table_columns)
+                tbl_col_set = SQLIdentifierSet(table_columns)
 
                 # Must match the order of columns in the data frame to map correctly
                 self._columns_to_types = OrderedDict()
