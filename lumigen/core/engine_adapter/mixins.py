@@ -114,10 +114,20 @@ class EngineAdapterMixin(EngineAdapter):
             db=exp.to_identifier(schema_name, quoted=self.identifier_needs_quoting(schema_name)) if schema_name else None,
             catalog=exp.to_identifier(catalog, quoted=self.identifier_needs_quoting(catalog)) if catalog else None,
         )
-        if Dialect.get(self.dialect):
+        try:
             return table_exp.sql(dialect=self.dialect)
-        else:
+        except:
             return table_exp.sql()
+
+    def get_qualified_column_name(self, column_name: t.Union[str, exp.Identifier]):
+        if not column_name:
+            raise ValueError("column_name cannot be empty.")
+        
+        column_exp = exp.Column(this=exp.to_identifier(column_name, quoted=self.identifier_needs_quoting(column_name)))
+        try:
+            return column_exp.sql(dialect=self.dialect)
+        except:
+            return column_exp.sql()
 
     def get_all_data_objects(self, keyword: str="") -> t.List[DataObject]:
         raise NotImplementedError()
