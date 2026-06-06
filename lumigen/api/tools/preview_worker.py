@@ -11,7 +11,7 @@ import logging
 if t.TYPE_CHECKING:
     from core._typing import DataFrameType
     from core.config.root import Config
-    from core.engine_adapter.mixins import FetchBatchMixin
+    from core.engine_adapter.mixins import EngineAdapterMixin, FetchBatchMixin
 
 from config.logging import setup_logger
 setup_logger(logging.INFO)
@@ -26,7 +26,7 @@ from core.adapters import validate_connections
 from core.execution import transform_data
 from core.job_context import JobContext, JobContextBuilder
 import transformers
-from utils import FallbackSet
+from utils import SQLIdentifierSet
 from utils.json import DisplayableJSONEncoder
 from utils.dataset import DataFrameConverter, columns_to_types_from_df
 from utils.sql import dialect_insensitive_tbl_name
@@ -171,14 +171,19 @@ class PreviewRunner:
         
         sink_table = context.job_props_model.get_sink_path()
         sink_table = dialect_insensitive_tbl_name(sink_table, writer.dialect)
+        destination_columns = {}
         if sink_table and writer.table_exists(sink_table):
-            destination_columns = writer.columns(sink_table)
+            for k, v in writer.columns(sink_table).items():
+                try:
+                    col_name = t.cast("EngineAdapterMixin", writer).get_qualified_column_name(k)
+                except:
+                    col_name = k
+                destination_columns[col_name] = v
         else:
             logger.info(f"Sink table {sink_table} does not exist. Using empty schema.")
-            destination_columns = {}
 
         column_mappings, unmapped_source_columns, unmapped_destination_columns = [], [], []
-        dest_col_set = FallbackSet(destination_columns)
+        dest_col_set = SQLIdentifierSet(destination_columns)
         mapped_destination_columns = set()
         for df_col_name, df_col_dtype in source_columns.items():
             tbl_col_name = dest_col_set.get(df_col_name)

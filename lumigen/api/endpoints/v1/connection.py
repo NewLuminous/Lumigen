@@ -5,13 +5,14 @@ from fastapi import APIRouter, Depends, HTTPException
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from sqlglot import exp
 from sqlglot.errors import ParseError
 from sqlmesh.utils.errors import SQLMeshError
 
 if t.TYPE_CHECKING:
     from core.engine_adapter.mixins import EngineAdapterMixin
 
-from utils import FallbackSet
+from utils import SQLIdentifierSet
 from utils.sql import dialect_insensitive_tbl_name
 from api.enums import DataObjectType
 from api.schemas import parse_connection, SchemaField, SchemaMappingRequest, ConnectionColumnMapping
@@ -91,10 +92,19 @@ async def describe_table(conn_config: t.Dict[str, t.Any], table: str,
             else:
                 raise HTTPException(status_code=500, detail=f"{e}")
             
-        try:
-            table_schema = {k: v.sql(dialect=engine_adapter.dialect) for k, v in table_columns.items()}
-        except ValueError:
-            table_schema = {k: v.sql() for k, v in table_columns.items()}
+        table_schema = {}
+        dialect = engine_adapter.dialect
+        for k, v in table_columns.items():
+            try:
+                col_name = t.cast("EngineAdapterMixin", engine_adapter).get_qualified_column_name(k)
+            except:
+                col_name = k
+
+            try:
+                table_schema[col_name] = v.sql(dialect=dialect)
+            except ValueError:
+                table_schema[col_name] = v.sql()
+                dialect = None
         if not table_schema:
             raise HTTPException(status_code=404, detail=f"Table {table} not found.")
             
@@ -149,7 +159,7 @@ async def schema_mapping(schemas: SchemaMappingRequest):
     column_mappings = []
     unmapped_source_columns = []
     unmapped_destination_columns = []
-    dest_col_set = FallbackSet(destination_columns)
+    dest_col_set = SQLIdentifierSet(destination_columns)
     mapped_destination_columns = set()
     for s_col_name, s_col_dtype in source_columns.items():
         d_col_name = dest_col_set.get(s_col_name)
