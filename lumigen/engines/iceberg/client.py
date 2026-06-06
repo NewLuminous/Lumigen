@@ -8,10 +8,11 @@ from enum import Enum, auto
 from sqlglot import exp, parse_one
 from sqlglot.dialects.dialect import Dialects
 from pyiceberg.catalog import WAREHOUSE_LOCATION, URI
+from pyiceberg.io import load_file_io, AWS_REGION
 from pyiceberg.io.pyarrow import _pyarrow_to_schema_without_ids
 from pyiceberg.schema import assign_fresh_schema_ids
 from pyiceberg.table import upsert_util, ALWAYS_TRUE
-from pyiceberg.exceptions import NoSuchTableError, NoSuchViewError
+from pyiceberg.exceptions import NoSuchNamespaceError, NoSuchTableError, NoSuchViewError
 import pyarrow as pa
 import duckdb
 
@@ -449,6 +450,14 @@ class IcebergCursor:
                     inferred_schema = assign_fresh_schema_ids(raw_schema)
 
             create_meta = IcebergSQLParser.parse_create_table(parsed_exp, self.dialect, inferred_schema=inferred_schema)
+            namespace_tuple = self._catalog.namespace_from(create_meta.table_name)
+            if namespace_tuple and not self._catalog.namespace_exists(namespace_tuple):
+                namespace_str = self._catalog.namespace_to_string(namespace_tuple)
+                raise NoSuchNamespaceError(
+                    f"Cannot create table '{create_meta.table_name}'. "
+                    f"Namespace '{namespace_str}' does not exist."
+                )
+            
             # CREATE OR REPLACE TABLE
             if parsed_exp.args.get("replace"):
                 target_table = IcebergSQLParser.extract_table_name(parsed_exp, self.dialect)
@@ -1162,7 +1171,31 @@ class IcebergConnection:
         return self.catalog
     
     def ping(self) -> None:
-        self.catalog.list_namespaces()
+        namespaces = self.catalog.list_namespaces()
+
+        warehouse = self.catalog.properties.get(WAREHOUSE_LOCATION)
+        # If warehouse isn't explicitly configured locally, try to fetch it from the server
+        if (not warehouse) and namespaces:
+            try:
+                ns_props = self.catalog.load_namespace_properties(namespaces[0])
+                warehouse = ns_props.get("location")
+            except Exception:
+                pass
+        if warehouse:
+            io_props = self.catalog.properties.copy()
+            timeout_ms = str((self.connect_timeout or self.DEFAULT_TIMEOUT_SECONDS) * 1000)
+            io_props.setdefault("s3.connect-timeout", timeout_ms)
+            io_props.setdefault("s3.request-timeout", timeout_ms)
+            
+            try:
+                io = load_file_io(io_props)
+                # Calling exists() forces a HEAD request to the storage API.
+                io.new_input(warehouse).exists()
+            except Exception as e:
+                raise ConnectionError(
+                    f"Catalog connected successfully, but Storage ping failed for '{warehouse}'. "
+                    f"Check your S3 endpoints, region, and credentials. Details: {str(e)}"
+                ) from e
 
     def table_exists(self, table: str, namespace: t.Optional[str] = None) -> bool:
         namespaces = {namespace} if namespace else (ns[0] for ns in self.catalog.list_namespaces() if ns)
@@ -1214,6 +1247,8 @@ def connect(catalog_type: str,
         for k, v in hadoop_config.items():
             if v is not None:
                 props["hadoop." + k] = v
+    if AWS_REGION not in props:
+        props[AWS_REGION] = "us-east-1"
 
     filtered_props = {k: v for k, v in props.items() if v is not None}
     return IcebergConnection(catalog_type, filtered_props, connect_timeout)
