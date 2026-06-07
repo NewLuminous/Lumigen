@@ -23,6 +23,45 @@ class JobStatus(str, Enum):
             JobStatus.FINISHED,
             JobStatus.UNKNOWABLE,
         )
+    
+    def is_valid_transition_to(self, new_status: "JobStatus") -> bool:
+        """
+        Validates the transition. Allows forward progression and cross-branch jumping,
+        but strictly prevents moving backwards along the job lifecycle.
+        """
+        if self == new_status:
+            return False
+
+        # The standard, forward-moving lifecycle DAG
+        dag_edges = {
+            JobStatus.INITIALIZING: {JobStatus.CREATED},
+            JobStatus.CREATED:      {JobStatus.PENDING},
+            JobStatus.PENDING:      {JobStatus.RUNNING},
+            JobStatus.RUNNING:      {JobStatus.FINISHED, JobStatus.FAILING, JobStatus.CANCELING},
+            JobStatus.FAILING:      {JobStatus.FAILED},
+            JobStatus.CANCELING:    {JobStatus.CANCELED},
+            JobStatus.FINISHED:     {JobStatus.UNKNOWABLE},
+            JobStatus.FAILED:       {JobStatus.UNKNOWABLE},
+            JobStatus.CANCELED:     {JobStatus.UNKNOWABLE},
+            JobStatus.UNKNOWABLE:   set()
+        }
+
+        # To prevent moving backwards, we check if 'self' (the old state) is reachable from 'new_status'. 
+        # If it is -> we are moving backwards (Invalid).
+        # If it isn't -> we are moving forwards or jumping branches (Valid).
+        visited = set()
+        queue = [new_status]
+        while queue:
+            current = queue.pop(0)
+            
+            if current == self:
+                return False # The old state is downstream of the new state. Invalid!
+            
+            if current not in visited:
+                visited.add(current)
+                queue.extend(dag_edges.get(current, set()) - visited)
+                
+        return True
 
     @classmethod
     def from_string(cls, status: str):

@@ -1,6 +1,6 @@
 import typing as t
 from fastapi import APIRouter, Response, status, Depends, BackgroundTasks, Query
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
@@ -72,6 +72,59 @@ async def get_job_info(id: str,
     loop = asyncio.get_running_loop()
     response = await loop.run_in_executor(executor, job_manager.get_job_info, id)
     return response
+
+@router.get("/watch")
+async def watch_job_status(id: str,
+                           max_retries: int = Query(3, description="Number of consecutive UNKNOWABLE states before closing."),
+                           job_manager: JobManagerAdapter = Depends(get_job_manager),
+                           executor: ThreadPoolExecutor = Depends(get_custom_executor)):
+    """
+    Streams job information to the client via Server-Sent Events (SSE).
+    Data is only yielded when the job's status changes.
+    The connection closes automatically when the job reaches a terminal state.
+    """
+    async def event_generator():
+        poll_interval = 1.0
+        unknowable_count = 0
+        loop = asyncio.get_running_loop()
+        last_status = None
+        try:
+            while True:
+                job_info: JobInfoResponse = await loop.run_in_executor(
+                    executor, job_manager.get_job_info, id
+                )
+                current_status = job_info.status
+                if current_status == JobStatus.UNKNOWABLE:
+                    unknowable_count += 1
+                    if unknowable_count < max_retries:
+                        await asyncio.sleep(poll_interval)
+                        continue
+                else:
+                    unknowable_count = 0
+
+                is_valid = True if last_status is None else last_status.is_valid_transition_to(current_status)
+                if is_valid:
+                    last_status = current_status
+                    
+                    # Yield data in standard SSE format
+                    json_data = job_info.model_dump_json() if hasattr(job_info, "model_dump_json") else job_info.json()
+                    yield f"data: {json_data}\n\n"
+                    
+                    # Stop if it reached a definitive terminal state (excluding UNKNOWABLE)
+                    if last_status.is_end_state() and last_status != JobStatus.UNKNOWABLE:
+                        break
+
+                # Stop if we've hit the UNKNOWABLE limit
+                if current_status == JobStatus.UNKNOWABLE and unknowable_count >= max_retries:
+                    break
+                
+                await asyncio.sleep(poll_interval)
+        except asyncio.CancelledError: # Client disconnected
+            pass
+        except Exception as e:
+            yield f"data: {{\"error\": \"Internal server error: {str(e)}\"}}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 @router.get("/metrics", response_model=JobMetricsResponse)
 async def get_job_metrics(id: str,
