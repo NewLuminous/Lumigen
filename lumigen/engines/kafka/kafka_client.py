@@ -4,6 +4,7 @@ import logging
 import re
 import json
 import time
+import socket
 import uuid
 from collections import defaultdict, OrderedDict
 from threading import Lock
@@ -450,6 +451,19 @@ class KafkaClientConnection:
     
     def ping(self, timeout: float = 1.0) -> None:
         try:
+            cluster_metadata = self.admin.list_topics(topic="__ping_check__", timeout=timeout)
+            if not cluster_metadata.brokers:
+                raise KafkaException("Ping failed: No brokers found in cluster metadata.")
+            
+            for broker in cluster_metadata.brokers.values():
+                try:
+                    socket.getaddrinfo(broker.host, broker.port)
+                except socket.gaierror:
+                    raise KafkaException(
+                        f"Kafka connection ping failed: Failed to resolve advertised broker "
+                        f"'{broker.host}:{broker.port}'. Name or service not known."
+                    )
+
             future = self.admin.describe_cluster(request_timeout=timeout)
             cluster_metadata = future.result() 
             if cluster_metadata.controller is None:
