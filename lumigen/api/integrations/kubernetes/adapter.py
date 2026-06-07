@@ -3,6 +3,7 @@ import typing as t
 import os
 import re
 import time
+import base64
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,6 +44,11 @@ class KubernetesAdapter(JobManagerAdapter):
     - STREAMING jobs are configured with a limited number of retries to handle transient errors.
     """
     _SEPARATOR = '-'
+    _REDACT_REGEX = re.compile(
+        r"(?i)secrets?|pass(word|wd|phrase)?|pwd|tokens?|"
+        r"access[._-]?key|api[._-]?key|private[._-]?key|auth[._-]?key|"
+        r"creds?|credentials?"
+    )
 
     def __init__(self, kubeconfig_path: t.Optional[str] = None, namespace: t.Optional[str] = None):
         try:
@@ -139,15 +145,15 @@ class KubernetesAdapter(JobManagerAdapter):
             logger.info(f"Found a non-active job for ID '{id}'. Deleting old resources before resubmission.")
             self._delete_job_resources(id)
 
-        # Check for orphaned ConfigMaps, just in case.
-        if self._get_config_map_by_name(resource_name):
-            logger.warning(f"Found an orphaned ConfigMap '{resource_name}'. Deleting it.")
-            self._cleanup_config_map(resource_name)
+        # Check for orphaned Secrets, just in case.
+        if self._get_secret_by_name(resource_name):
+            logger.warning(f"Found an orphaned Secret '{resource_name}'. Deleting it.")
+            self._cleanup_config_resources(resource_name)
 
         try:
             job_object = self._create_k8s_job_object(resource_name, labels, config, checkpoint_dir)
             created_job = self.batch_v1_api.create_namespaced_job(namespace=self.namespace, body=job_object)
-            self._create_owned_config_map(resource_name, labels, config, owner=created_job)
+            self._create_job_configurations(resource_name, labels, config, owner=created_job)
             logger.info(f"Successfully submitted Kubernetes Job '{resource_name}' for ETL job '{id}'.")
 
             # After successful submission, briefly monitor the pod for critical startup errors.
@@ -493,7 +499,7 @@ class KubernetesAdapter(JobManagerAdapter):
                 # Create resources
                 job_object = self._create_k8s_job_object(resource_name, labels, config, ttl_override=60) # Short TTL for temp jobs
                 created_job = self.batch_v1_api.create_namespaced_job(namespace=self.namespace, body=job_object)
-                self._create_owned_config_map(resource_name, labels, config, owner=created_job)
+                self._create_job_configurations(resource_name, labels, config, owner=created_job)
 
                 # Watch for completion
                 w = watch.Watch()
@@ -556,10 +562,35 @@ class KubernetesAdapter(JobManagerAdapter):
         except Exception as e:
             logger.error(f"Error running disposable job '{resource_name}': {traceback.format_exc()}")
             return DataFetchResponse(success=False, detail=str(e), logs=traceback.format_exc())
+        
+    def _redact_config_values(self, data: t.Any, current_key: str = "") -> t.Any:
+        """
+        Recursively replaces sensitive values in the configuration dictionary
+        with '<REDACTED>' placeholders based on the REDACTION_PATTERN regex.
+        """
+        if isinstance(data, dict):
+            return {k: self._redact_config_values(v, k) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [self._redact_config_values(item, current_key) for item in data]
+        else:
+            # Check if the current key exists and matches the sensitive pattern
+            if current_key and self._REDACT_REGEX.search(current_key):
+                return "<REDACTED>"
+            return data
 
-    def _create_owned_config_map(self, resource_name: str, labels: dict, config: Config, owner: client.V1Job):
+    def _create_job_configurations(self, resource_name: str, labels: dict, config: Config, owner: client.V1Job):
+        """
+        Creates two resources:
+        1. A Secret containing the actual unredacted configuration (mounted to the Pod).
+        2. A shadow ConfigMap containing redacted configurations (for developer visibility).
+        """
         config_as_dict = json.loads(config.json())
         config_yaml_str = yaml.dump(config_as_dict)
+        encoded_config = base64.b64encode(config_yaml_str.encode('utf-8')).decode('utf-8')
+
+        redacted_dict = self._redact_config_values(config_as_dict)
+        redacted_yaml_str = yaml.dump(redacted_dict)
+
         owner_metadata: V1ObjectMeta = owner.metadata
         owner_reference = client.V1OwnerReference(
             api_version=owner.api_version, kind=owner.kind,
@@ -567,26 +598,38 @@ class KubernetesAdapter(JobManagerAdapter):
             block_owner_deletion=True
         )
         
+        # Create Secret
         metadata = client.V1ObjectMeta(
             name=resource_name, labels=labels, owner_references=[owner_reference]
         )
-        
+        secret = client.V1Secret(
+            api_version="v1", kind="Secret", type="Opaque", metadata=metadata, data={"config.yaml": encoded_config}
+        )
+        self.core_v1_api.create_namespaced_secret(namespace=self.namespace, body=secret)
+
+        # Create Shadow ConfigMap
+        debug_metadata = client.V1ObjectMeta(
+            name=f"{resource_name}-debug", labels=labels, owner_references=[owner_reference]
+        )
         config_map = client.V1ConfigMap(
-            api_version="v1", kind="ConfigMap", metadata=metadata, data={"config.yaml": config_yaml_str}
+            api_version="v1", kind="ConfigMap", metadata=debug_metadata, data={"config-structure.yaml": redacted_yaml_str}
         )
         self.core_v1_api.create_namespaced_config_map(namespace=self.namespace, body=config_map)
 
-    def _get_config_map_by_name(self, resource_name: str) -> t.Optional[client.V1ConfigMap]:
+    def _get_secret_by_name(self, resource_name: str) -> t.Optional[client.V1Secret]:
         try:
-            return self.core_v1_api.read_namespaced_config_map(name=resource_name, namespace=self.namespace)
+            return self.core_v1_api.read_namespaced_secret(name=resource_name, namespace=self.namespace)
         except ApiException as e:
             if e.status == 404:
                 return None
             raise # Re-raise other API errors
 
-    def _cleanup_config_map(self, resource_name: str):
+    def _cleanup_config_resources(self, resource_name: str):
+        """Deletes both the execution Secret and the debug ConfigMap."""
         with suppress(ApiException):
-            self.core_v1_api.delete_namespaced_config_map(name=resource_name, namespace=self.namespace)
+            self.core_v1_api.delete_namespaced_secret(name=resource_name, namespace=self.namespace)
+        with suppress(ApiException):
+            self.core_v1_api.delete_namespaced_config_map(name=f"{resource_name}-debug", namespace=self.namespace)
 
     def _check_pvc_exists(self, pvc_name: str) -> bool:
         try:
@@ -606,10 +649,13 @@ class KubernetesAdapter(JobManagerAdapter):
                                       checkpoint_dir: t.Optional[str]=None, enable_tty: bool = False,
                                       ) -> client.V1PodTemplateSpec:
         volume_mounts = [
-            client.V1VolumeMount(name="config-volume", mount_path="/config")
+            client.V1VolumeMount(name="config-volume", mount_path="/config", read_only=True)
         ]
         volumes = [
-            client.V1Volume(name="config-volume", config_map=client.V1ConfigMapVolumeSource(name=resource_name))
+            client.V1Volume(
+                name="config-volume", 
+                secret=client.V1SecretVolumeSource(secret_name=resource_name),
+            )
         ]
         if checkpoint_dir:
             pvc_name = settings.KUBE_CHECKPOINT_PVC_NAME
@@ -779,7 +825,7 @@ class KubernetesAdapter(JobManagerAdapter):
             while time.time() - start_time < timeout_seconds:
                 if self._get_job_by_id(raw_id) is None:
                     logger.info(f"Successfully confirmed deletion of Job '{resource_name}'.")
-                    # The owned ConfigMap will be garbage collected automatically.
+                    self._cleanup_config_resources(resource_name)  # Explicit cleanup fallback
                     return
                 time.sleep(1) # Wait 1 second between checks
             
