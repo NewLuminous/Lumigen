@@ -102,6 +102,17 @@ class SQLContextManager:
                     )
         return list(udfs)
     
+    def is_spark_alive(self) -> bool:
+        """Checks if the Spark Session and its underlying JVM gateway are active."""
+        if not self._spark_session:
+            return False
+        try:
+            # Query the Java Spark Context directly to see if it has been stopped
+            return not self._spark_session.sparkContext._jsc.sc().isStopped()
+        except Exception:
+            # If accessing the JVM throws an error (e.g. Py4J Network Error), the session is dead
+            return False
+
     def get_spark_session(
             self,
             app_name: t.Optional[str] = None,
@@ -128,6 +139,12 @@ class SQLContextManager:
             SparkTimeoutError: If the session creation exceeds the specified timeout.
             Exception: Any other exception raised during Spark initialization.
         """
+        if self._spark_session and not self.is_spark_alive():
+            logger.warning("Active Spark session found to be dead or stopped. Resetting state for re-initialization.")
+            with self._spark_lock:
+                self._spark_status = SparkStatus.UNINITIALIZED
+                self._spark_session = None
+        
         if self._spark_session:
             return self._spark_session
         
