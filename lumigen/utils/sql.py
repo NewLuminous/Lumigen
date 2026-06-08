@@ -249,9 +249,13 @@ class TablePushdownExtractor:
         self.tables_by_scope: t.Dict[t.Any, t.List[exp.Table]] = defaultdict(list)
         self.tables_data: t.List[ExtractedTablePushdown] = []
         self.node_to_data: t.Dict[int, ExtractedTablePushdown] = {}
+        self.cte_aliases = {cte.alias for cte in parsed_ast.find_all(exp.CTE)}
         
         # Find all tables and group them by their immediate parent scope
         for table_exp in parsed_ast.find_all(exp.Table):
+            if table_exp.name in self.cte_aliases:
+                continue
+
             scope = table_exp.find_ancestor(*self.scope_types)
             scope_id = id(scope) if scope else 'root'
             self.tables_by_scope[scope_id].append(table_exp)
