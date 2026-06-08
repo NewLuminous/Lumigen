@@ -826,19 +826,18 @@ class SparkConnectionConfig(ConnectionConfig):
         from core.engine_context import SQLContextManager
 
         spark_config = SparkConf()
-        if self.config:
-            # Static configurations
-            static_confs = {
-                "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions", # For Iceberg
-            }
-            for k, v in static_confs.items():
-                if self.config.get(k):
-                    self.config[k] = self.config[k] + "," + v
-                else:
-                    self.config[k] = v
+        # Static configurations
+        static_confs = {
+            "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions", # For Iceberg
+        }
+        for k, v in static_confs.items():
+            if self.config.get(k):
+                self.config[k] = self.config[k] + "," + v
+            else:
+                self.config[k] = v
 
-            for k, v in self.config.items():
-                spark_config.set(k, v)
+        for k, v in self.config.items():
+            spark_config.set(k, v)
 
         if self.config_dir:
             os.environ["SPARK_CONF_DIR"] = self.config_dir
