@@ -54,6 +54,13 @@ class DockerAdapter(JobManagerAdapter):
             logger.error(f"Could not connect to Docker daemon: {e}")
 
     def _perform_submit(self, config: Config, id: str, name: t.Optional[str]=None, checkpoint_dir: t.Optional[str]=None) -> JobStatusResponse:
+        """
+        Handles job submission by creating and launching a new Docker container.
+        
+        Note: This is one of the few places where we explicitly call `_refresh_job_dict()`.
+        Since creating a new container changes the structural state of the host, we force
+        a global sync here to detect any pre-existing containers before spinning up the new one.
+        """
         id = DockerAdapter._normalize_job_id(id)
         if name is None:
             name = settings.JOB_IMAGE_NAME
@@ -249,6 +256,13 @@ class DockerAdapter(JobManagerAdapter):
         return None
     
     def get_job_status(self, id: str) -> JobStatus:
+        """
+        Retrieves the live mapped JobStatus of a container.
+        
+        To prevent returning stale data cached in python memory by the Docker SDK,
+        this method invokes `_reload_container(..., force=True)`. This forces a 
+        on-demand GET /containers/{id}/json API call to fetch live container properties.
+        """
         id = DockerAdapter._normalize_job_id(id)
         if id not in self.job_dict:
             return JobStatus.UNKNOWABLE
@@ -281,6 +295,14 @@ class DockerAdapter(JobManagerAdapter):
             return JobStatus.UNKNOWABLE
         
     def get_job_info(self, id: str) -> JobInfoResponse:
+        """
+        Builds the detailed info payload for a specific job ID.
+        
+        By calling `get_job_status`, it implicitly triggers a `container.reload()` via 
+        `_reload_container`. This populates `container_attrs` with the nested State dictionary
+        containing the raw `StartedAt` and `FinishedAt` timestamps, which are absent in 
+        sparse container collections.
+        """
         id = DockerAdapter._normalize_job_id(id)
         if id not in self.job_dict:
             return JobInfoResponse(job_id=id, status=JobStatus.UNKNOWABLE)
@@ -405,6 +427,18 @@ class DockerAdapter(JobManagerAdapter):
             raise HTTPException(status_code=500, detail=f"An unexpected error occurred while fetching logs for job '{id}'.")
     
     def list_jobs(self, sparse: t.Optional[bool] = True, name: t.Optional[str] = None) -> t.List[t.Dict[str, t.Any]]:
+        """
+        Lists jobs managed by this adapter.
+        
+        If `sparse=False` is passed, the adapter iterates over each discovered container
+        and invokes `self.get_job_info()`. Because the standard Docker Daemon API lacks 
+        a native bulk-inspect endpoint (it is physically impossible to inspect multiple 
+        containers in a single API call), making sequential inspect requests is an unavoidable 
+        overhead. 
+        
+        We bound this O(N) overhead by filtering the iteration only to our tracked ETL container 
+        IDs in `self.job_dict`, completely skipping unrelated containers on the host.
+        """
         result = []
         if name:
             job_ids = self.jobs_by_name.get(name, set())
@@ -512,6 +546,20 @@ class DockerAdapter(JobManagerAdapter):
                         logger.error(f"Failed to delete temp config file '{temp_file.resolve()}': {e}")
 
     def _refresh_job_dict(self):
+        """
+        Synchronizes our local cached tracking structure with the Docker daemon.
+        
+        Calls `self.client.containers.list(all=True, sparse=True)` to execute a lightweight, 
+        extremely fast O(1) HTTP request (GET /containers/json). 
+        
+        By passing `sparse=True` to the Docker SDK, we fetch only the summary container models,
+        preventing it from launching an expensive inspect API storm for every container on the host.
+        This provides excellent performance, especially on shared Docker hosts.
+        
+        NOTE: This method is only lazily called during lifecycle mutations (job creation,
+        job listings, or background pruning). It is NOT called during normal watch polling loops 
+        (get_job_status/get_job_info), avoiding redundant global namespace scans on the daemon.
+        """
         if self.client is None:
             return
 
@@ -549,6 +597,15 @@ class DockerAdapter(JobManagerAdapter):
         self.jobs_by_name = new_jobs_by_name
 
     def _reload_container(self, job_id: str, force: bool = False):
+        """
+        Forces an on-demand container inspect API call (GET /containers/{id}/json).
+        
+        Because Docker SDK container models cache their attributes locally, checking `container.status` 
+        or `container.attrs` directly without calling `reload()` can yield stale properties [3].
+        
+        This method bypasses the cache and updates `container_info` with fresh, fully detailed state
+        properties (such as precise exit codes and ISO-8601 start/finish timestamps) [3].
+        """
         if job_id not in self.job_dict:
             if not force:
                 return

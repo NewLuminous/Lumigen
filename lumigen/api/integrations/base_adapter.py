@@ -45,6 +45,13 @@ class JobManagerAdapter(JobPreviewerBase, ABC):
     def get_job_info(self, id: str) -> JobInfoResponse:
         pass
 
+    def get_batch_job_info(self, ids: t.List[str]) -> t.Dict[str, JobInfoResponse]:
+        """
+        Default implementation: Loop over get_job_info for each ID.
+        Subclasses (like Kubernetes) should override this to perform optimized bulk queries.
+        """
+        return {job_id: self.get_job_info(job_id) for job_id in ids}
+
     @abstractmethod
     def get_job_metrics(self, id: str) -> JobMetricsResponse:
         pass

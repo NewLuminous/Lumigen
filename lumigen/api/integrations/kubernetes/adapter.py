@@ -240,12 +240,13 @@ class KubernetesAdapter(JobManagerAdapter):
             return JobStatus.PENDING
         return JobStatus.CREATED
     
-    def get_job_info(self, id: str) -> JobInfoResponse:
-        job = self._get_job_by_id(id)
-        if not job:
-            return JobInfoResponse(job_id=id, status=JobStatus.UNKNOWABLE)
-
+    def _get_job_info(self, job: V1Job) -> JobInfoResponse:
+        """Gets detailed job info from a Kubernetes Job object with minimal additional API calls."""
+        app_name_label = self._normalize_k8s_name(settings.PROJECT_NAME)
+        normalized_id = job.metadata.labels.get(f"{app_name_label}/job-id", "unknown")
+        job_name = job.metadata.labels.get(f"{app_name_label}/job-name")
         status = self._get_status_from_k8s_job(job)
+
         start_time_str = None
         if job.status.start_time and isinstance(job.status.start_time, datetime):
             start_time_str = job.status.start_time.isoformat()
@@ -253,14 +254,37 @@ class KubernetesAdapter(JobManagerAdapter):
         finish_time_str = None
         if job.status.completion_time and isinstance(job.status.completion_time, datetime):
             finish_time_str = job.status.completion_time.isoformat()
+        
         return JobInfoResponse(
-            job_id=id,
-            job_name=self.get_job_name(id),
+            job_id=normalized_id,
+            job_name=job_name,
             status=status,
             message=f"Job is currently {str(status).lower()}.",
             start_time=start_time_str,
             finish_time=finish_time_str,
         )
+    
+    def get_job_info(self, id: str) -> JobInfoResponse:
+        job = self._get_job_by_id(id)
+        if not job:
+            return JobInfoResponse(job_id=id, status=JobStatus.UNKNOWABLE)
+
+        return self._get_job_info(job)
+    
+    def get_batch_job_info(self, ids: t.List[str]) -> t.Dict[str, JobInfoResponse]:
+        all_jobs_raw = self.list_jobs(sparse=False)
+        fetched_jobs = {job["job_id"]: JobInfoResponse(**job) for job in all_jobs_raw}
+        result = {}
+        for raw_id in ids:
+            normalized_id = self._normalize_label_value(raw_id)
+            if normalized_id in fetched_jobs:
+                job_info = fetched_jobs[normalized_id]
+                result[raw_id] = job_info
+            else:
+                # If a watched job is missing from list_jobs, it was deleted.
+                result[raw_id] = JobInfoResponse(job_id=raw_id, status=JobStatus.UNKNOWABLE)
+
+        return result
     
     def get_job_metrics(self, id: str) -> JobMetricsResponse:
         pod = self._get_pod_for_job(id)
@@ -478,7 +502,8 @@ class KubernetesAdapter(JobManagerAdapter):
                         "job_mode": job_metadata.labels.get(f"{app_name_label}/job-mode", str(JobMode.BATCH).lower()).upper(),
                     })
                 else:
-                    result.append(self.get_job_info(id_in_label).model_dump())
+                    # Uses _get_job_info safely without triggering any recursive K8s API queries
+                    result.append(self._get_job_info(job).model_dump())
             return result
         except ApiException as e:
             logger.error(f"Could not list Kubernetes jobs: {e.reason}")

@@ -1,5 +1,5 @@
 import typing as t
-from fastapi import APIRouter, Response, status, Depends, BackgroundTasks, Query
+from fastapi import APIRouter, Request, Response, HTTPException, status, Depends, BackgroundTasks, Query
 from fastapi.responses import PlainTextResponse, StreamingResponse
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -11,6 +11,7 @@ from api.enums import JobStatus
 from api.schemas import JobRequest, JobStatusResponse, JobInfoResponse, JobMetricsResponse, JobPreviewResponse, JobColumnMapping
 from api.integrations.base_adapter import JobManagerAdapter
 from api.dependencies import get_job_manager, get_custom_executor
+from api.services.watcher import JobStatusWatcher
 
 logger = logging.getLogger(__name__)
 
@@ -74,55 +75,55 @@ async def get_job_info(id: str,
     return response
 
 @router.get("/watch")
-async def watch_job_status(id: str,
-                           max_retries: int = Query(3, description="Number of consecutive UNKNOWABLE states before closing."),
-                           job_manager: JobManagerAdapter = Depends(get_job_manager),
-                           executor: ThreadPoolExecutor = Depends(get_custom_executor)):
+async def watch_job_status(request: Request,
+                           id: str):
     """
     Streams job information to the client via Server-Sent Events (SSE).
     Data is only yielded when the job's status changes.
     The connection closes automatically when the job reaches a terminal state.
     """
+    watcher: JobStatusWatcher = request.app.state.job_status_watcher
+
+    def _attempt_recovery():
+        logger.warning("Attempting recovery of JobStatusWatcher...")
+        try:
+            watcher.start(watcher._job_manager, watcher._executor)
+        except Exception as e:
+            logger.error(f"Mid-stream recovery failed: {e}", exc_info=True)
+            raise RuntimeError("Background monitoring service is currently unavailable.") from e
+
+    if not watcher.is_alive:
+        try:
+            _attempt_recovery()
+        except RuntimeError:
+            raise HTTPException(status_code=503, detail="Background monitoring service is unavailable.")
+
+    client_queue = await watcher.subscribe(id)
     async def event_generator():
-        poll_interval = 1.0
-        unknowable_count = 0
-        loop = asyncio.get_running_loop()
-        last_status = None
+        watch_timeout = 7.0 
         try:
             while True:
-                job_info: JobInfoResponse = await loop.run_in_executor(
-                    executor, job_manager.get_job_info, id
-                )
-                current_status = job_info.status
-                if current_status == JobStatus.UNKNOWABLE:
-                    unknowable_count += 1
-                    if unknowable_count < max_retries:
-                        await asyncio.sleep(poll_interval)
-                        continue
-                else:
-                    unknowable_count = 0
+                try:
+                    job_info: JobInfoResponse = await asyncio.wait_for(
+                        client_queue.get(), 
+                        timeout=watch_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    if not watcher.is_alive:
+                        _attempt_recovery()
+                    continue
 
-                is_valid = True if last_status is None else last_status.is_valid_transition_to(current_status)
-                if is_valid:
-                    last_status = current_status
-                    
-                    # Yield data in standard SSE format
-                    json_data = job_info.model_dump_json() if hasattr(job_info, "model_dump_json") else job_info.json()
-                    yield f"data: {json_data}\n\n"
-                    
-                    # Stop if it reached a definitive terminal state (excluding UNKNOWABLE)
-                    if last_status.is_end_state() and last_status != JobStatus.UNKNOWABLE:
-                        break
+                # Yield data in standard SSE format
+                json_data = job_info.model_dump_json() if hasattr(job_info, "model_dump_json") else job_info.json()
+                yield f"data: {json_data}\n\n"
 
-                # Stop if we've hit the UNKNOWABLE limit
-                if current_status == JobStatus.UNKNOWABLE and unknowable_count >= max_retries:
+                # Disconnect the client stream if the job has hit a definitive terminal state
+                if job_info.status.is_end_state():
                     break
-                
-                await asyncio.sleep(poll_interval)
         except asyncio.CancelledError: # Client disconnected
             pass
-        except Exception as e:
-            yield f"data: {{\"error\": \"Internal server error: {str(e)}\"}}\n\n"
+        finally:
+            watcher.unsubscribe(id, client_queue)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

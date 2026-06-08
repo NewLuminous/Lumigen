@@ -16,12 +16,14 @@ from api.endpoints import v1
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Initialize the custom blocking thread pool executor
     app.state.custom_blocking_task_executor = ThreadPoolExecutor(
         max_workers=settings.MAX_WORKER_THREADS,
         thread_name_prefix="custom_blocking_pool"
     )
     logger.info(f"Custom ThreadPoolExecutor initialized with max_workers={settings.MAX_WORKER_THREADS}")
 
+    # Background Spark Session initialization
     from core.engine_context import SQLContextManager
     from pyspark.conf import SparkConf
     context_manager = SQLContextManager.get_instance()
@@ -35,6 +37,15 @@ async def lifespan(app: FastAPI):
     spark_init_thread = threading.Thread(target=initialize_spark_in_background, daemon=True)
     spark_init_thread.start()
 
+    # Initialize and start the unified background status watcher
+    from api.dependencies import get_job_manager
+    from api.services.watcher import JobStatusWatcher
+
+    job_manager = await get_job_manager()
+    watcher = JobStatusWatcher(max_retries=3)
+    watcher.start(job_manager, app.state.custom_blocking_task_executor)
+    app.state.job_status_watcher = watcher
+
     yield
 
     if app.state.custom_blocking_task_executor:
@@ -42,6 +53,11 @@ async def lifespan(app: FastAPI):
         # Allow pending tasks to complete, but don't wait indefinitely
         app.state.custom_blocking_task_executor.shutdown(wait=True)
         logger.info("Custom ThreadPoolExecutor shut down.")
+
+    if hasattr(app.state, "job_status_watcher"):
+        logger.info("Shutting down JobStatusWatcher...")
+        await app.state.job_status_watcher.stop()
+        logger.info("JobStatusWatcher shut down.")
 
     context_manager.close()
 

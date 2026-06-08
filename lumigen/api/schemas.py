@@ -9,17 +9,40 @@ from api.enums import JobStatus
 
 
 class JobRequest(BaseModel):
-    id: str
+    id: str = Field(
+        ...,
+        description="The raw, un-normalized identifier of the job as submitted by the client."
+    )
 
 class JobStatusResponse(BaseModel):
-    job_id: str
+    """
+    Represents the high-level status of an ETL job.
+    """
+    job_id: str = Field(
+        ...,
+        description=(
+            "The normalized identifier of the job used by the underlying container orchestrator "
+            "(e.g., Kubernetes labels or Docker container names) to ensure API compatibility. "
+            "Falls back to the raw requested identifier only when the status is UNKNOWABLE."
+        )
+    )
     job_name: t.Optional[str] = None
     status: JobStatus
     message: t.Optional[str] = None
 
 class JobInfoResponse(JobStatusResponse):
-    start_time: t.Optional[str] = None
-    finish_time: t.Optional[str] = None
+    """
+    Detailed historical metadata of an ETL job.
+    The job_id field is always the normalized resource ID, except when the status is UNKNOWABLE.
+    """
+    start_time: t.Optional[str] = Field(
+        None,
+        description="ISO 8601 formatted timestamp representing when the job execution started."
+    )
+    finish_time: t.Optional[str] = Field(
+        None,
+        description="ISO 8601 formatted timestamp representing when the job reached a terminal state."
+    )
 
 class JobMetricsResponse(BaseModel):
     cpu_usage_percent: t.Optional[float] = None
