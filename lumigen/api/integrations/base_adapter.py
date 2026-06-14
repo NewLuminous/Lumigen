@@ -68,7 +68,7 @@ class JobManagerAdapter(JobPreviewerBase, ABC):
         pass
 
     def _prepare_config_for_submission(self, config: Config) -> Config:
-        if config.get_executor().type_ == "spark":
+        if config.get_executor() and config.get_executor().type_ == "spark":
             executor: SparkConnectionConfig = config.executor
             executor.log_level = settings.SPARK_LOG_LEVEL
 

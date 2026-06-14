@@ -2,6 +2,7 @@ from __future__ import annotations
 import typing as t
 import logging
 import json
+import threading
 import traceback
 from abc import ABC, abstractmethod
 from sqlglot import exp
@@ -34,25 +35,23 @@ class JobPreviewerBase(ABC):
         if executor:
             executor.log_level = "ERROR" # Reduce log noise for previews
 
-        config.job_properties["source_limit"] = 10000
+        config.job_properties["source_limit"] = 8192
         config.job_properties["source_batch_size"] = sample_size
         config.audit_store = None
         config.sink = None
-        if config.executor and config.executor.type_ == "spark":
-            config.executor = None # Python by default for faster response
-            try:
-                context_manager = SQLContextManager.get_instance()
-                if self._can_run_preview_directly(config) and context_manager.get_spark_status() == SparkStatus.READY:
-                    result = self._run_direct_preview(config)
-                    return JobPreviewResponse(
-                        success=True,
-                        schema=result.get("schema"),
-                        data=result.get("data"),
-                        detail=f"{'Job preview'} ran successfully.",
-                        logs="Direct in-process execution."
-                    )
-            except Exception as e:
-                logger.warning(f"Direct data preview failed, using fallback. Reason: {e}\n{traceback.format_exc()}")
+
+        try:
+            if self._can_run_preview_directly(config):
+                result = self._run_direct_preview(config)
+                return JobPreviewResponse(
+                    success=True,
+                    schema=result.get("schema"),
+                    data=result.get("data"),
+                    detail=f"{'Job preview'} ran successfully.",
+                    logs="Direct in-process execution."
+                )
+        except Exception as e:
+            logger.warning(f"Direct data preview failed, using fallback. Reason: {e}\n{traceback.format_exc()}")
 
         data_res = await self.run_disposable_job(config, temp_job_name="Job preview")
         return JobPreviewResponse(
@@ -75,22 +74,20 @@ class JobPreviewerBase(ABC):
         config.job_properties["source_limit"] = 1
         config.job_properties["source_batch_size"] = 1
         config.audit_store = None
-        if config.executor and config.executor.type_ == "spark":
-            config.executor = None # Python by default for faster response
-            try:
-                context_manager = SQLContextManager.get_instance()
-                if self._can_run_preview_directly(config, schema_only=True) and context_manager.get_spark_status() == SparkStatus.READY:
-                    result = self._run_direct_preview(config)
-                    return JobColumnMapping(
-                        success=True,
-                        column_mappings=result.get("column_mappings"),
-                        unmapped_source_columns=result.get("unmapped_source_columns"),
-                        unmapped_destination_columns=result.get("unmapped_destination_columns"),
-                        detail=f"{'Job output column mapping'} ran successfully.",
-                        logs="Direct in-process execution."
-                    )
-            except Exception as e:
-                logger.warning(f"Direct column mapping preview failed, using fallback. Reason: {e}\n{traceback.format_exc()}")
+
+        try:
+            if self._can_run_preview_directly(config, schema_only=True):
+                result = self._run_direct_preview(config)
+                return JobColumnMapping(
+                    success=True,
+                    column_mappings=result.get("column_mappings"),
+                    unmapped_source_columns=result.get("unmapped_source_columns"),
+                    unmapped_destination_columns=result.get("unmapped_destination_columns"),
+                    detail=f"{'Job output column mapping'} ran successfully.",
+                    logs="Direct in-process execution."
+                )
+        except Exception as e:
+            logger.warning(f"Direct column mapping preview failed, using fallback. Reason: {e}\n{traceback.format_exc()}")
 
         data_res = await self.run_disposable_job(config, temp_job_name="Column mapping preview")
         return JobColumnMapping(
@@ -109,9 +106,7 @@ class JobPreviewerBase(ABC):
             nonlocal result
             result = json.loads(json_string)
 
-        # Force a Spark executor for the direct run, as that's the pre-condition
         config_direct = config.model_copy()
-        config_direct.executor = parse_connection_config({"type": "spark"})
         runner = PreviewRunner(config_direct, resolve_executor=False)
         runner.run(callback=set_output, do_validate_connections=False)
 
@@ -121,6 +116,19 @@ class JobPreviewerBase(ABC):
         return result
 
     def _can_run_preview_directly(self, config: Config, schema_only: bool = False) -> bool:
+        if config.executor and config.executor.type_ == "spark":
+            context_manager = SQLContextManager.get_instance()
+            status = context_manager.get_spark_status()
+            if status != SparkStatus.READY:
+                if status != SparkStatus.INITIALIZING:
+                    logger.info(f"Spark session status is {status}. Triggering background initialization.")
+                    threading.Thread(
+                        target=context_manager.get_spark_session,
+                        daemon=True,
+                        name="PreviewSparkInitThread",
+                    ).start()
+                return False
+
         source_cfg = config.get_source()
         engine_adapter_src = source_cfg.create_engine_adapter() if source_cfg else None
         if engine_adapter_src:

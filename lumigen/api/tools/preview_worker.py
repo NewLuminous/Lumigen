@@ -114,6 +114,9 @@ class PreviewRunner:
         else:
             limit = job_props.source_limit or job_props.source_batch_size
             if limit:
+                if isinstance(query, exp.Select):
+                    query = query.limit(limit)
+
                 try:
                     reader = t.cast("FetchBatchMixin", reader)
                     for df in reader.fetch_batch_df(query, limit):
