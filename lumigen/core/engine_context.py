@@ -54,6 +54,7 @@ class SQLContextManager:
             self._spark_status: SparkStatus = SparkStatus.UNINITIALIZED
             self._spark_functions: t.Set[str] = set()
             self._spark_udfs: t.Set[str] = set()
+            self._persisted_spark_conf: t.Dict[str, str] = {}
 
             self._duckdb_conn: t.Optional['duckdb.DuckDBPyConnection'] = None
             self._duckdb_lock: threading.Lock = threading.Lock()
@@ -75,7 +76,7 @@ class SQLContextManager:
 
         if not isinstance(context, (SparkSession, DuckDBPyConnection)):
             logger.info(f"Skipping UDF registration: {type(context).__name__} does not support custom Python UDFs.")
-            return
+            return []
         logger.info(f"Searching for UDFs to register for {type(context).__name__}...")
         
         # Local imports to avoid circular dependencies at the module level
@@ -119,6 +120,7 @@ class SQLContextManager:
             conf: t.Optional['SparkConf'] = None,
             hive_support: t.Optional[bool] = True,
             log_level: t.Optional[str] = "INFO",
+            force_restart: bool = False,
         ) -> 'SparkSession':
         """
         Lazily initializes and returns a SparkSession.
@@ -131,6 +133,8 @@ class SQLContextManager:
             conf: A SparkConf object for custom configuration.
             hive_support: Whether to enable Hive support. Defaults to True.
             log_level: Defaults to INFO.
+            force_restart: If True, terminates the active Spark session, clears previous configurations, and builds a completely new session. 
+                           If False, retains the active session and merges new configurations.
 
         Returns:
             An active SparkSession instance.
@@ -139,6 +143,34 @@ class SQLContextManager:
             SparkTimeoutError: If the session creation exceeds the specified timeout.
             Exception: Any other exception raised during Spark initialization.
         """
+        if force_restart:
+            with self._spark_lock:
+                if self._spark_session:
+                    try:
+                        logger.info("Stopping current Spark session to provision a fresh one...")
+                        self._spark_session.stop()
+                    except Exception as e:
+                        logger.warning(f"Error stopping old Spark session: {e}")
+                
+                self._spark_session = None
+                self._spark_status = SparkStatus.UNINITIALIZED
+                if conf is not None:
+                    self._persisted_spark_conf = dict(conf.getAll())
+                else:
+                    self._persisted_spark_conf = {}
+        else:
+            # Incremental configuration updates
+            if conf is not None:
+                new_configs = dict(conf.getAll())
+                with self._spark_lock:
+                    self._persisted_spark_conf.update(new_configs)
+                    if self._spark_session and self.is_spark_alive():
+                        for k, v in new_configs.items():
+                            try:
+                                self._spark_session.conf.set(k, str(v))
+                            except Exception as e:
+                                logger.debug(f"Could not apply config '{k}' at runtime. Reason: {e}")
+
         if self._spark_session and not self.is_spark_alive():
             logger.warning("Active Spark session found to be dead or stopped. Resetting state for re-initialization.")
             with self._spark_lock:
@@ -156,8 +188,11 @@ class SQLContextManager:
             try:
                 from pyspark.sql import SparkSession
                 from pyspark.conf import SparkConf
-                logger.info(f"Initializing Spark session '{app_name}' for the first time...")
-                spark_conf = conf or SparkConf()
+                logger.info(f"Initializing Spark session '{app_name or 'Default'}' for the first time...")
+                spark_conf = SparkConf()
+                for k, v in self._persisted_spark_conf.items():
+                    spark_conf.set(k, str(v))
+
                 builder = SparkSession.builder
                 if app_name:
                     builder = builder.appName(app_name)
@@ -242,7 +277,7 @@ class SQLContextManager:
     def _list_duckdb_functions(self, conn: "duckdb.DuckDBPyConnection") -> t.List[str]:
         """Lists all function names (lowercase) from a DuckDB connection."""
         result = conn.execute("SELECT function_name FROM duckdb_functions()").fetchall()
-        func_list = (row[0] for row in result)
+        func_list = [row[0] for row in result]
         return func_list
 
     def _spark_func_exists(self, func_name: str) -> bool:
