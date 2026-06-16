@@ -91,6 +91,11 @@ async def describe_table(conn_config: t.Dict[str, t.Any], table: str,
                 raise HTTPException(status_code=500, detail=f"Unknown data type: {data_type}")
             else:
                 raise HTTPException(status_code=500, detail=f"{e}")
+        except Exception as e:
+            table_exists = await loop.run_in_executor(executor, engine_adapter.table_exists, table_name)
+            if not table_exists:
+                raise HTTPException(status_code=404, detail=f"Table '{table}' not found.")
+            raise e
             
         table_schema = {}
         dialect = engine_adapter.dialect

@@ -5,7 +5,7 @@ import json
 from pydantic import BaseModel
 import pyspark.sql as pyspark_sql
 from functools import partial
-from sqlglot import exp, Dialect
+from sqlglot import exp, Dialect, Dialects
 import logging
 
 if t.TYPE_CHECKING:
@@ -65,7 +65,11 @@ class PreviewRunner:
         temp_src_adapter = source_cfg.create_engine_adapter() if source_cfg else None
         for transform_cfg in self.config.transformation_pipeline:
             if transform_cfg.name.upper() == "SQL" and (query := transform_cfg.options.get("query")):
-                select_exp = transformers.sql.SQL.parse_and_validate_query(query, temp_src_adapter, **self.config.job_properties)
+                if exec_cfg and exec_cfg.type_ == "spark":
+                    engine_dialect = Dialects.SPARK
+                else:
+                    engine_dialect = Dialects.DUCKDB
+                select_exp = transformers.sql.SQL.parse_and_validate_query(query, temp_src_adapter, fallback_dialect=engine_dialect, **self.config.job_properties)
                 # Find all custom function calls
                 for func_exp in select_exp.find_all(exp.Anonymous):
                     func_name = func_exp.this

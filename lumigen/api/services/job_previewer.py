@@ -5,7 +5,7 @@ import json
 import threading
 import traceback
 from abc import ABC, abstractmethod
-from sqlglot import exp
+from sqlglot import exp, Dialects
 
 if t.TYPE_CHECKING:
     from core.config.root import Config
@@ -146,7 +146,11 @@ class JobPreviewerBase(ABC):
                     if not query:
                         continue
 
-                    select_exp = transformers.sql.SQL.parse_and_validate_query(query, engine_adapter_src, **config.job_properties)
+                    if config.executor and config.executor.type_ == "spark":
+                        engine_dialect = Dialects.SPARK
+                    else:
+                        engine_dialect = Dialects.DUCKDB
+                    select_exp = transformers.sql.SQL.parse_and_validate_query(query, engine_adapter_src, fallback_dialect=engine_dialect, **config.job_properties)
                     for _ in select_exp.find_all(exp.Join):
                         return False
         return True
