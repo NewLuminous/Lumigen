@@ -55,6 +55,7 @@ class KafkaClientCursor:
         self._rebalance_lock = Lock()
 
         self._is_in_transaction = False
+        self._producer_transaction_started = False
         
         # Cursor state
         self._topic_patterns = []
@@ -104,48 +105,48 @@ class KafkaClientCursor:
             logger.debug("begin() called on an already active transaction. Ignoring.")
             return
         
-        self.producer.begin_transaction()
+        # Lazy Kafka Producer initialization
         self._is_in_transaction = True
-        logger.debug("Kafka transaction started.")
+        self._producer_transaction_started = False
+        logger.debug("Logical transaction started. Kafka producer transaction will start on first write.")
 
     def commit(self, timeout: float=30.0) -> None:
         if not self._is_in_transaction:
             logger.warning("commit() called without an active transaction. Ignoring.")
             return
         
-        if self._producer is None:
-            logger.info("No producer activity in this transaction. Nothing to commit.")
-            self._is_in_transaction = False
-            return
-            
         try:
-            self.producer.commit_transaction(timeout)
-            logger.debug("Kafka transaction committed successfully.")
-        except KafkaException as e:
-            logger.error(f"Failed to commit Kafka transaction within {timeout}s.", exc_info=e)
-            self.rollback(timeout)
-            raise
+            if self._producer is not None and self._producer_transaction_started:
+                try:
+                    self.producer.commit_transaction(timeout)
+                    logger.debug("Kafka transaction committed successfully.")
+                except KafkaException as e:
+                    logger.error(f"Failed to commit Kafka transaction within {timeout}s.", exc_info=e)
+                    self.rollback(timeout)
+                    raise
+            else:
+                logger.debug("No producer activity in this transaction. Nothing to commit.")
         finally:
             self._is_in_transaction = False
+            self._producer_transaction_started = False
 
     def rollback(self, timeout: float = 10.0) -> None:
         if not self._is_in_transaction:
             logger.warning("rollback() called without an active transaction. Ignoring.")
             return
         
-        if self._producer is None:
-            logger.info("No producer activity in this transaction. Nothing to roll back.")
-            self._is_in_transaction = False
-            return
-
         try:
-            self.producer.abort_transaction(timeout)
-            logger.warning("Kafka transaction rolled back.")
+            if self._producer is not None and self._producer_transaction_started:
+                self.producer.abort_transaction(timeout)
+                logger.warning("Kafka transaction rolled back.")
+            else:
+                logger.debug("No producer activity in this transaction. Nothing to roll back.")
         except KafkaException as e:
             logger.error("Exception during transaction abort.", exc_info=e)
             raise
         finally:
             self._is_in_transaction = False
+            self._producer_transaction_started = False
 
     def close(self) -> None:
         if self._is_in_transaction:
@@ -259,6 +260,11 @@ class KafkaClientCursor:
             self._assignments.clear()
         
     def _produce(self, topic: str, key: t.Optional[t.Union[str, bytes]] = None, value: t.Optional[t.Union[str, bytes]] = None):
+        if self._is_in_transaction and not self._producer_transaction_started:
+            logger.debug("First write detected. Starting physical Kafka transaction.")
+            self.producer.begin_transaction()
+            self._producer_transaction_started = True
+
         def delivery_report(err, msg):
             if err is not None:
                 logger.error(f"FATAL: Message delivery failed: {err}.")

@@ -9,6 +9,7 @@ source:
     s3.endpoint: s3.<Region>.amazonaws.com
     s3.access-key-id: xxxxxxxxxxxxxxxxx
     s3.secret-access-key: xxxxxxxxxxxxxxxxx
+    credential: xxxxxxxxxxxxxxxxx:xxxxxxxxxxxxxxxxx
     client.region: <Region>
 
 sink:
