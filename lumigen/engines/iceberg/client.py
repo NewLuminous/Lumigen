@@ -754,8 +754,8 @@ class IcebergCursor:
                 elif pos_upper.startswith("AFTER"):
                     after_col_name: str = re.sub(r"(?i)AFTER\s+", "", pos_clause).strip(" `'\"")
                     st.move_after(col_name, after_col_name)
-            # if schema_txn is not None:
-            #     t.cast("UpdateSchema", schema_txn).commit()
+            if schema_txn is not None:
+                t.cast("UpdateSchema", schema_txn).commit()
 
         if rename_tbl_to is not None:
             self._catalog.rename_table(target_table, rename_tbl_to)
