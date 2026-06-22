@@ -51,4 +51,7 @@ class Iceberg(Databricks):
                 params = ", ".join(self.sql(e) for e in expression.expressions)
                 return f"{base_type}({params})"
             
+            if base_type in ("struct", "array", "map"):
+                return super().datatype_sql(expression)
+            
             return base_type

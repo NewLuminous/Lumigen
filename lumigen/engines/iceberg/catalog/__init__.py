@@ -23,6 +23,11 @@ from utils.connections import HadoopS3PropertiesSyncer
 _ENV_CONFIG = Config()
 
 
+def load_rest(name: str, conf: Properties) -> Catalog:
+    from engines.iceberg.catalog.rest import RestCatalog
+
+    return RestCatalog(name, **conf)
+
 def load_hive(name: str, conf: Properties) -> Catalog:
     try:
         from engines.iceberg.catalog.hive import HiveCatalog
@@ -72,6 +77,7 @@ def load_nessie(name: str, conf: Properties) -> Catalog:
 
 
 EXTENDED_CATALOGS: dict[str, t.Callable[[str, Properties], Catalog]] = {
+    CatalogType.REST.value: load_rest,
     CatalogType.HIVE.value: load_hive,
     CatalogType.GLUE.value: load_glue,
     CatalogType.DYNAMODB.value: load_dynamodb,

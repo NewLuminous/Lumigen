@@ -6,6 +6,7 @@ import json
 import time
 import socket
 import uuid
+from datetime import datetime
 from collections import defaultdict, OrderedDict
 from threading import Lock
 from sqlglot import exp
@@ -365,7 +366,12 @@ class KafkaClientCursor:
         if len(self._last_consumed_offsets) == 0:
             logger.debug("First Kafka message received successfully")
         self._last_consumed_offsets[msg.topic()][msg.partition()] = msg.offset()
-        data = (msg.key(), msg.value(), msg.topic(), msg.partition(), msg.offset(), msg.timestamp()[1], msg.timestamp()[0], msg.headers())
+        
+        ts_type, ts_ms = msg.timestamp()
+        dt_object = None
+        if ts_ms is not None and ts_ms >= 0:
+            dt_object = datetime.fromtimestamp(ts_ms / 1000.0)
+        data = (msg.key(), msg.value(), msg.topic(), msg.partition(), msg.offset(), dt_object, ts_type, msg.headers())
         return data
     
     def _consumed_all(self) -> bool:

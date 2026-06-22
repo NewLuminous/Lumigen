@@ -2,6 +2,7 @@ from __future__ import annotations
 import typing as t
 import logging
 from threading import Lock
+import re
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -20,6 +21,7 @@ if t.TYPE_CHECKING:
     from pandas import DataFrame
     from pyiceberg.catalog import Catalog
     from pyiceberg.table import Table as PyIcebergTable
+    from pyiceberg.table.update.schema import UpdateSchema
     from pyiceberg.expressions import BooleanExpression
     from duckdb import DuckDBPyConnection
 
@@ -483,6 +485,8 @@ class IcebergCursor:
                 )
         elif isinstance(parsed_exp, exp.Drop):
             self._execute_drop(parsed_exp)
+        elif isinstance(parsed_exp, exp.Alter) or (isinstance(parsed_exp, exp.Command) and str(parsed_exp.this).upper() == "ALTER"):
+            self._execute_alter(query)
         else:
             is_ddl = False
         
@@ -595,7 +599,10 @@ class IcebergCursor:
         elif isinstance(parsed_exp, exp.Select):
             self._execute_select(parsed_exp)
         elif not is_ddl:
-            raise ValueError(f"Unsupported SQL statement of type: '{type(parsed_exp).__name__.upper()}'")
+            if not isinstance(parsed_exp, exp.Command):
+                raise ValueError(f"Unsupported SQL statement of type: '{type(parsed_exp).__name__.upper()}'")
+            else:
+                raise ValueError(f"Unsupported SQL statement: {query}")
         
         if is_auto_commit:
             self.commit()
@@ -623,6 +630,135 @@ class IcebergCursor:
                 drop_func(target_table)
         except NotImplementedError:
             raise ValueError(f"DROP {drop_exp.kind} unsupported.")
+
+    def _execute_alter(self, query: str) -> None:
+        # ALTER TABLE table_identifier UNSET TBLPROPERTIES ( key1, key2, ... )
+        props_to_remove = []
+        if re.search(r"UNSET\s+TBLPROPERTIES", query, re.IGNORECASE):
+            m = re.search(r"UNSET\s+TBLPROPERTIES\s*\(([^)]+)\)", query, re.IGNORECASE)
+            if m:
+                keys = re.findall(r"['\"]([^'\"]+)['\"]", m.group(1))
+                props_to_remove.extend(keys)
+            query = re.sub(r"UNSET\s+TBLPROPERTIES\s*\([^)]+\)", "SET TBLPROPERTIES ()", query, flags=re.IGNORECASE)
+
+        # Extract FIRST / AFTER clauses before parsing
+        col_positions: t.Dict[str, str] = {}
+        def replace_pos_clause(m):
+            op = m.group(1).upper()
+            col_name = m.group(2).strip(" `'\"")
+            col_positions[col_name] = m.group(4).strip()
+            intermediate = (m.group(3) or "").strip()
+            if not intermediate:
+                # Replace with a dummy rename to keep SQL AST valid for sqlglot
+                if op in ("ALTER", "CHANGE"):
+                    return f"RENAME COLUMN {m.group(2)} TO {m.group(2)}"
+                return f"{op} COLUMN {m.group(2)}"
+            return f"{op} COLUMN {m.group(2)} {intermediate}"
+        
+        # Matches strictly: (ALTER|CHANGE) COLUMN <col> <intermediate> (FIRST|AFTER <col>)
+        intermediate_pattern = r"""((?:[^,()'"]+|\([^)]*\)|'[^']*'|"[^"]*")*?)"""
+        pattern = r"(?i)\b(ALTER|CHANGE)\s+(?!TABLE\b)(?:COLUMN\s+)?(?!\bCOLUMN\b)([`'\"]?[\w.]+[`'\"]?)(?:\s+" + intermediate_pattern + r")?\s+(FIRST|AFTER\s+[`'\"]?[\w.]+[`'\"]?)(?=\s*[,;]|\s*$)"
+        query = re.sub(pattern, replace_pos_clause, query)
+
+        alter_exp = parse_one(query, dialect=self.dialect)
+        if not isinstance(alter_exp, exp.Alter):
+            # Fallback to MySQL dialect for ALTER TABLE DROP COLUMN
+            alter_exp = parse_one(query, dialect=Dialects.MYSQL)
+            if not isinstance(alter_exp, exp.Alter):
+                raise ValueError(f"Unsupported SQL statement: {query}\nYou may need to quote field names that contain \".\"")
+
+        if not alter_exp.kind == "TABLE":
+            raise NotImplementedError(f"ALTER {alter_exp.kind} unsupported.")
+
+        rename_tbl_to = None
+        props_to_set = {}
+        target_table = IcebergSQLParser.extract_table_name(alter_exp.this, dialect=self.dialect)
+        iceberg_tbl = self._load_table(target_table)
+        with iceberg_tbl.transaction() as txn:
+            schema_txn = None
+            def get_schema_txn():
+                nonlocal schema_txn
+                if schema_txn is None:
+                    schema_txn = txn.update_schema(allow_incompatible_changes=True)
+                return schema_txn
+
+            for action in alter_exp.actions:
+                if isinstance(action, exp.AlterRename):
+                    rename_tbl_to = IcebergSQLParser.extract_table_name(action.this, self.dialect, lowercase=False)
+                elif isinstance(action, exp.AlterSet):
+                    for set_exp in action.expressions:
+                        if isinstance(set_exp, exp.Properties):
+                            for property_exp in t.cast("t.List[exp.Property]", set_exp.expressions):
+                                if "value" in property_exp.args:
+                                    key = t.cast("exp.Literal", property_exp.this).name
+                                    value = t.cast("exp.Literal", property_exp.args["value"]).name
+                                    props_to_set[key] = value
+                                else:
+                                    raise NotImplementedError(f"Unsupported table property type: {type(property_exp).__name__}")
+                # ALTER TABLE ADD COLUMN(S)
+                elif isinstance(action, (exp.Schema, exp.ColumnDef)):
+                    col_defs: t.List[exp.ColumnDef] = [action] if isinstance(action, exp.ColumnDef) else action.expressions
+                    for col_def in col_defs:
+                        new_col = IcebergSQLParser.parse_column_def(col_def)
+                        col_path = tuple(new_col.name.split('.')) if '.' in new_col.name else new_col.name
+
+                        st = get_schema_txn()
+                        st.add_column(
+                            path=col_path,
+                            field_type=new_col.field_type,
+                            doc=new_col.doc,
+                            required=new_col.required,
+                            default_value=new_col.initial_default,
+                        )
+
+                        position: exp.ColumnPosition = col_def.args.get("position")
+                        if position:
+                            if position.args["position"] == "FIRST":
+                                st.move_first(col_path)
+                            elif position.args["position"] == "AFTER":
+                                after_col: exp.Column = position.this
+                                st.move_after(col_path, after_col.name)
+                            else:
+                                raise ValueError(f"Unsupported column position: {position.args['position']}")
+                elif isinstance(action, exp.RenameColumn):
+                    rename_col_from: exp.Column = action.this
+                    rename_col_to: exp.Column = action.args["to"]
+                    if rename_col_from.name != rename_col_to.name:
+                        get_schema_txn().rename_column(rename_col_from.name, rename_col_to.name)
+                elif isinstance(action, exp.AlterColumn):
+                    col_name = t.cast("exp.Identifier", action.this).name
+                    col_dtype = IcebergSQLParser.convert_data_type(action.args.get("dtype")) if action.args.get("dtype") else None
+                    comment_lit: exp.Literal = action.args.get("comment")
+                    get_schema_txn().update_column(
+                        path=col_name,
+                        field_type=col_dtype,
+                        required=action.args.get("allow_null"),
+                        doc=comment_lit.to_py() if comment_lit else None,
+                    )
+                elif isinstance(action, exp.Drop) and action.kind == "COLUMN":
+                    col_name = t.cast("exp.Identifier", action.this).name
+                    get_schema_txn().delete_column(col_name)
+                else:
+                    raise ValueError(f"Unsupported SQL statement: {query}")
+                                
+            if props_to_set:
+                txn.set_properties(props_to_set)
+            if props_to_remove:
+                txn.remove_properties(*props_to_remove)
+
+            for col_name, pos_clause in col_positions.items():
+                st = get_schema_txn()
+                pos_upper = pos_clause.upper()
+                if pos_upper.startswith("FIRST"):
+                    st.move_first(col_name)
+                elif pos_upper.startswith("AFTER"):
+                    after_col_name: str = re.sub(r"(?i)AFTER\s+", "", pos_clause).strip(" `'\"")
+                    st.move_after(col_name, after_col_name)
+            # if schema_txn is not None:
+            #     t.cast("UpdateSchema", schema_txn).commit()
+
+        if rename_tbl_to is not None:
+            self._catalog.rename_table(target_table, rename_tbl_to)
         
     def _execute_scoped_cow(
         self, 

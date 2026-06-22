@@ -3,6 +3,7 @@ import typing as t
 from abc import ABC, abstractmethod
 
 if t.TYPE_CHECKING:
+    from pyspark.sql import SparkSession
     from sqlmesh.core.engine_adapter.base import EngineAdapter
     from core.config.connection import ConnectionConfig, SparkConnectionConfig
 
@@ -12,6 +13,11 @@ class SparkAdapterConfigurator(ABC):
     Abstract Base Class for a "plug-in" that configures a Spark Session and
     creates a specialized Engine Adapter for a specific external data source.
     """
+
+    @staticmethod
+    def _set_conf_default(spark: SparkSession, key: str, value: t.Any) -> None:
+        if value is not None and spark.conf.get(key, None) is None:
+            spark.conf.set(key, str(value))
 
     @abstractmethod
     def configure(

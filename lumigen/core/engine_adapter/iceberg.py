@@ -5,8 +5,6 @@ from __future__ import annotations
 import typing as t
 
 from sqlglot import exp
-from sqlglot.errors import ParseError
-import pandas as pd
 
 from sqlglot.dialects.dialect import Dialects
 from sqlmesh.core.dialect import add_table, to_schema
@@ -30,7 +28,7 @@ if t.TYPE_CHECKING:
     from engines.iceberg.client import IcebergConnection
 
 from core.engine_adapter.mixins import EngineAdapterMixin, FetchBatchMixin
-from utils.dataset import columns_to_types_from_df, DataFrameConverter
+from utils.dataset import columns_to_types_from_df
 
 
 class IcebergEngineAdapter(

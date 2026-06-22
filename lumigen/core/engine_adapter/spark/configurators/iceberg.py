@@ -92,34 +92,34 @@ class SparkIcebergConfigurator(SparkAdapterConfigurator):
             spark.conf.set(f"spark.sql.catalog.{catalog}.uri", external_db_config.uri)
         for prop in hadoop_config:
             spark.conf.set(f"spark.sql.catalog.{catalog}.hadoop.{prop}", hadoop_config[prop])
-            if external_db_config.catalog_type == IcebergCatalogType.HIVE.value:
-                existing_val = spark.conf.get(f"spark.hadoop.{prop}", None)
-                new_val = str(hadoop_config[prop])
-                if existing_val is not None and str(existing_val) != new_val:
-                    raise ConfigError(
-                        f"Hadoop configuration conflict detected for property '{prop}'. "
-                        f"'{prop}' is already set to '{existing_val}' "
-                        f"while the current connection is attempting to set it to '{new_val}'.\n"
-                        f"When using multiple Hive catalogs (e.g., for both source and sink), "
-                        f"they must share the exact same 'hadoop_config'.\n"
-                        f"Suggestion: Align the 'hadoop_config' across your connections, "
-                        f"or change one of the catalogs to a type that supports isolated configurations (e.g., 'hadoop', 'rest', etc)."
-                    )
-                else:
-                    spark.conf.set(f"spark.hadoop.{prop}", new_val)
+            
+            existing_common_val = spark.conf.get(f"spark.hadoop.{prop}", None)
+            new_common_val = str(hadoop_config[prop])
+            if existing_common_val is None:
+                spark.conf.set(f"spark.hadoop.{prop}", new_common_val)
+            elif external_db_config.catalog_type == IcebergCatalogType.HIVE.value and str(existing_common_val) != new_common_val:
+                raise ConfigError(
+                    f"Hadoop configuration conflict detected for property '{prop}'. "
+                    f"'{prop}' is already set to '{existing_common_val}' "
+                    f"while the current connection is attempting to set it to '{new_common_val}'.\n"
+                    f"When using multiple Hive catalogs (e.g., for both source and sink), "
+                    f"they must share the exact same 'hadoop_config'.\n"
+                    f"Suggestion: Align the 'hadoop_config' across your connections, "
+                    f"or change one of the catalogs to a type that supports isolated configurations (e.g., 'hadoop', 'rest', etc)."
+                )
 
 
         # Inferred configurations
+        catalog_uri = spark.conf.get(f"spark.sql.catalog.{catalog}.uri", None)
         if external_db_config.catalog_type == IcebergCatalogType.SQL.value:
             spark.conf.set(f"spark.sql.catalog.{catalog}.uri", JdbcUriTranslator.translate_to_jdbc(
-                spark.conf.get(f"spark.sql.catalog.{catalog}.uri", ""),
+                catalog_uri if catalog_uri else "",
                 user=catalog_properties.get(f"jdbc.user"),
                 password=catalog_properties.get(f"jdbc.password"),
             ))
 
         if external_db_config.catalog_type == IcebergCatalogType.GLUE.value:
-            if not catalog_properties.get("glue.endpoint"):
-                spark.conf.set(f"spark.sql.catalog.{catalog}.glue.endpoint", spark.conf.get(f"spark.sql.catalog.{catalog}.uri", None))
+            self._set_conf_default(spark, f"spark.sql.catalog.{catalog}.glue.endpoint", catalog_uri)
 
         is_aws_catalog = (
             external_db_config.catalog_type in (IcebergCatalogType.GLUE.value, IcebergCatalogType.DYNAMODB.value)
@@ -149,12 +149,15 @@ class SparkIcebergConfigurator(SparkAdapterConfigurator):
             secret = catalog_properties.get("s3.secret-access-key") or catalog_properties.get("client.secret-access-key")
             if (not key) or (not secret):
                 spark.conf.set(f"spark.sql.catalog.{catalog}.client.credentials-provider", "software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider")
+            if key and secret:
+                self._set_conf_default(spark, f"spark.sql.catalog.{catalog}.credential", f"{key}:{secret}")
 
         if is_aws_catalog:
-            if not catalog_properties.get("client.access-key-id"):
-                spark.conf.set(f"spark.sql.catalog.{catalog}.client.access-key-id", "any")
-            if not catalog_properties.get("client.secret-access-key"):
-                spark.conf.set(f"spark.sql.catalog.{catalog}.client.secret-access-key", "any")
+            self._set_conf_default(spark, f"spark.sql.catalog.{catalog}.client.access-key-id", "any")
+            self._set_conf_default(spark, f"spark.sql.catalog.{catalog}.client.secret-access-key", "any")
+
+        if external_db_config.catalog_type == IcebergCatalogType.REST.value:
+            self._set_conf_default(spark, f"spark.sql.catalog.{catalog}.token-exchange-enabled", "false")
 
 
         # System properties

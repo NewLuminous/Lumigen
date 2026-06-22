@@ -1,11 +1,12 @@
 from __future__ import annotations
 import typing as t
 import re
+import itertools
 from dataclasses import dataclass
 from sqlglot import exp, parse_one
 
 from pyiceberg.schema import Schema
-from pyiceberg.types import NestedField
+from pyiceberg.types import IcebergType, NestedField, ListType, MapType, StructType
 from pyiceberg.partitioning import (
     PartitionSpec, 
     PartitionField, 
@@ -43,6 +44,14 @@ class CreateTableMetadata:
     partition_spec: PartitionSpec
     properties: t.Dict[str, str]
     if_not_exists: bool
+
+@dataclass
+class ColumnDefMetadata:
+    name: str
+    field_type: t.Union[IcebergType, str]
+    required: bool
+    doc: str
+    initial_default: t.Any
 
 
 class IcebergSQLParser:
@@ -101,6 +110,82 @@ class IcebergSQLParser:
             properties=properties,
             if_not_exists=if_not_exists,
         )
+    
+    @staticmethod
+    def convert_data_type(dtype: t.Union[str, exp.DataType], id_counter: t.Iterator[int] = None) -> IcebergType:
+        if id_counter is None:
+            id_counter = itertools.count(1)
+        if isinstance(dtype, str):
+            dtype = parse_one(dtype, into=exp.DataType, dialect=Iceberg)
+
+        t_type: exp.DataType.Type = dtype.this
+        t_type_str = t_type.value.upper() if hasattr(t_type, "value") else str(t_type).upper()
+        
+        if t_type_str == "ARRAY":
+            type_args = dtype.expressions or []
+            return ListType(
+                element_id=next(id_counter),
+                element=IcebergSQLParser.convert_data_type(type_args[0], id_counter) if len(type_args) > 0 else None,
+                element_required=False,
+            )
+        elif t_type_str == "MAP":
+            type_args = dtype.expressions or []
+            return MapType(
+                key_id=next(id_counter),
+                key_type=IcebergSQLParser.convert_data_type(type_args[0], id_counter) if len(type_args) > 0 else None,
+                value_id=next(id_counter),
+                value_type=IcebergSQLParser.convert_data_type(type_args[1], id_counter) if len(type_args) > 1 else None,
+                value_required=False,
+            )
+        elif t_type_str == "STRUCT":
+            fields = []
+            col_def: exp.ColumnDef
+            for col_def in dtype.expressions:
+                fields.append(NestedField(next(id_counter), col_def.name, IcebergSQLParser.convert_data_type(col_def.kind, id_counter)))
+            return StructType(*fields)
+
+        return NestedField.convert_field_type(dtype.sql(dialect=Iceberg))
+    
+    @staticmethod
+    def parse_column_def(col_def: exp.ColumnDef, id_counter: t.Optional[t.Iterator[int]] = None) -> ColumnDefMetadata:
+        not_null_constr = False
+        comment_col_constr = None
+        default_col_constr = None
+        for constr in col_def.constraints:
+            if isinstance(constr.kind, exp.NotNullColumnConstraint) and not constr.kind.args.get("allow_null"):
+                not_null_constr = True
+            elif isinstance(constr.kind, exp.CommentColumnConstraint):
+                comment_col_constr = t.cast("exp.Literal", constr.kind.this).to_py()
+            elif isinstance(constr.kind, exp.DefaultColumnConstraint):
+                default_col_constr = t.cast("exp.Literal", constr.kind.this).to_py()
+        
+        return ColumnDefMetadata(
+            name=col_def.name,
+            field_type=IcebergSQLParser.convert_data_type(col_def.kind, id_counter),
+            required=not_null_constr,
+            doc=comment_col_constr,
+            initial_default=default_col_constr,
+        )
+    
+    @staticmethod
+    def parse_schema(schema_exp: exp.Schema) -> t.List[NestedField]:
+        fields = []
+        id_counter = itertools.count(1)
+        col_def: exp.ColumnDef
+        for col_def in schema_exp.expressions:
+            field_id = next(id_counter)
+            field = IcebergSQLParser.parse_column_def(col_def, id_counter)
+            fields.append(
+                NestedField(
+                    field_id=field_id,
+                    name=field.name,
+                    field_type=field.field_type,
+                    required=field.required,
+                    doc=field.doc,
+                    initial_default=field.initial_default,
+                )
+            )
+        return fields
 
     @staticmethod
     def parse_create_table(create_exp: exp.Create, dialect: DialectType, inferred_schema: t.Optional[Schema] = None) -> CreateTableMetadata:
@@ -108,30 +193,7 @@ class IcebergSQLParser:
         target_table = IcebergSQLParser.extract_table_name(create_exp, dialect, lowercase=False)
 
         if isinstance(create_exp.this, exp.Schema):
-            fields = []
-            col_def: exp.ColumnDef
-            for i, col_def in enumerate(create_exp.this.expressions, start=1):
-                not_null_constr = False
-                comment_col_constr = None
-                default_col_constr = None
-                for constr in col_def.constraints:
-                    if isinstance(constr.kind, exp.NotNullColumnConstraint) and not constr.kind.args.get("allow_null"):
-                        not_null_constr = True
-                    elif isinstance(constr.kind, exp.CommentColumnConstraint):
-                        comment_col_constr = t.cast("exp.Literal", constr.kind.this).to_py()
-                    elif isinstance(constr.kind, exp.DefaultColumnConstraint):
-                        default_col_constr = t.cast("exp.Literal", constr.kind.this).to_py()
-
-                fields.append(
-                    NestedField(
-                        field_id=i,
-                        name=col_def.name,
-                        field_type=col_def.kind.sql(dialect="iceberg").lower(),
-                        required=not_null_constr,
-                        doc=comment_col_constr,
-                        initial_default=default_col_constr,
-                    )
-                )
+            fields = IcebergSQLParser.parse_schema(create_exp.this)
             schema = Schema(*fields)
         elif isinstance(create_exp.this, exp.Table):
             if inferred_schema is None:

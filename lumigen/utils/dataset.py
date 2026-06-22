@@ -178,7 +178,7 @@ def columns_to_types_from_df(df: DataFrameType) -> t.Dict[str, exp.DataType]:
                 series = df[column_name]
                 series_not_null = series[~series.isnull()]
                 if series_not_null.shape[0] > 0:
-                    exp_type = _TYPE_MAPPINGS.get(type(series_not_null.at[0]), exp.DataType.build("text"))
+                    exp_type = _TYPE_MAPPINGS.get(type(series_not_null.iat[0]), exp.DataType.build("text"))
                 else:
                     exp_type = _TYPE_MAPPINGS.get(type(column_type))
             else:

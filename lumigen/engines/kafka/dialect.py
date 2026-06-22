@@ -32,8 +32,7 @@ class Kafka(Dialect):
 
     class Tokenizer(Tokenizer):
         IDENTIFIERS = ['"']
-        SINGLE_TOKENS = {**Tokenizer.SINGLE_TOKENS}
-        SINGLE_TOKENS.pop("-")
+        VAR_SINGLE_TOKENS = set(Tokenizer.VAR_SINGLE_TOKENS) | {"-"}
 
         KEYWORDS = {
             **Tokenizer.KEYWORDS,
