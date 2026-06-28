@@ -73,6 +73,11 @@ class DataFrameConverter:
                 df[column_header] = df[column_header].map(bytes, na_action="ignore")
             for column_header in col_group_by_dtype.get("timestamp", []):
                 df[column_header] = df[column_header].astype("datetime64[ns]")
+            for column_header in col_group_by_dtype.get("struct", []):
+                df[column_header] = df[column_header].map(
+                    lambda x: t.cast("pyspark_types.Row", x).asDict(recursive=True) if hasattr(x, "asDict") else x,
+                    na_action="ignore"
+                )
         
         return df
         
@@ -165,6 +170,7 @@ _TYPE_MAPPINGS = {
     pyspark_types.ArrayType: exp.DataType.build(exp.DataType.Type.ARRAY),
     pyspark_types.MapType: exp.DataType.build(exp.DataType.Type.MAP),
     pyspark_types.StructType: exp.DataType.build(exp.DataType.Type.STRUCT),
+    pyspark_types.Row: exp.DataType.build(exp.DataType.Type.STRUCT),
     pyspark_types.NullType: exp.DataType.build(exp.DataType.Type.NULL),
     pyspark_types.UserDefinedType: exp.DataType.build(exp.DataType.Type.USERDEFINED),
 }

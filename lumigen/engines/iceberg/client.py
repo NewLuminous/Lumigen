@@ -6,7 +6,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from sqlglot import exp, parse_one
+from sqlglot import exp, parse_one, parse
 from sqlglot.dialects.dialect import Dialects
 from pyiceberg.catalog import WAREHOUSE_LOCATION, URI
 from pyiceberg.io import load_file_io, AWS_REGION
@@ -303,7 +303,10 @@ class IcebergCursor:
             # Scan the WAP branch if it exists, otherwise main
             branch_target = self.txn_id if (state and state.wap_branch_created) else "main"
             if condition:
-                data_scan = iceberg_tbl.scan(row_filter=condition)
+                try:
+                    data_scan = iceberg_tbl.scan(row_filter=condition)
+                except:
+                    data_scan = iceberg_tbl.scan()
             else:
                 data_scan = iceberg_tbl.scan()
 
@@ -396,6 +399,15 @@ class IcebergCursor:
                                             )
 
     def execute(self, query: str, df: t.Optional[DataFrame] = None, **kwargs) -> None:
+        parsed_exps = parse(query, dialect=self.dialect)
+        if not parsed_exps:
+            return None
+        
+        for parsed_exp in parsed_exps:
+            if parsed_exp is not None:
+                self._execute_single(parsed_exp.sql(dialect=self.dialect), df=df, **kwargs)
+    
+    def _execute_single(self, query: str, df: t.Optional[DataFrame] = None, **kwargs) -> None:
         self._clear_cursor_state()
         parsed_exp = parse_one(query, dialect=self.dialect)
 

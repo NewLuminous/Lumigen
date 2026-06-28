@@ -22,6 +22,8 @@ from core.config.job import JobMode, JobSourceRelatedFields
 
 
 class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
+    PROCESSING_VIEW_NAME = "DUAL" # The alias used within SQL queries to refer to the in-flight data frame
+
     @staticmethod
     def _register_duckdb_udf(conn: "duckdb.DuckDBPyConnection") -> t.Optional[t.Union[str, t.Iterable[str]]]:
         return None
@@ -42,11 +44,11 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
                 else:
                     raise e
         
-        # --- DUAL Table Validation Logic ---
+        # --- In-Flight View Validation Logic ---
         dual_exists = False
         src_tbl_exists = False
         for table_exp in select_exp.find_all(exp.Table):
-            if table_exp.name.upper() == "DUAL" and not table_exp.db:
+            if table_exp.name.upper() == SQL.PROCESSING_VIEW_NAME and not table_exp.db:
                 dual_exists = True
             try:
                 source_table = exp.to_table(
@@ -64,16 +66,19 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
             except:
                 pass
 
-        if kwargs.get("job_mode", JobMode.BATCH) == JobMode.BATCH:
-            if not (dual_exists or src_tbl_exists):
-                raise InvalidParameterError("Query must select from `DUAL` table or provided source table at least once." \
-                    " `DUAL` table represents the processing table. All tables except `DUAL` are read in batch mode."
-                )
-        else:
-            if not dual_exists:
-                raise InvalidParameterError("Query must select from `DUAL` table at least once." \
-                    " `DUAL` table represents the processing table. All tables except `DUAL` are read in batch mode."
-                )
+        if not dual_exists:
+            raise InvalidParameterError(
+                f"The SQL query must reference the `{SQL.PROCESSING_VIEW_NAME}` table at least once.\n\n"
+                f"Note on the table references in the query:\n"
+                f"  - `{SQL.PROCESSING_VIEW_NAME}` represents the specific batch of data currently flowing through the ETL pipeline "
+                f"(e.g., only the new records during an INCREMENTAL load, or the extracted dataset during a FULL load).\n"
+                f"  - Any physical table names referenced in the query (even if it is the same name as the source table) "
+                f"are queried directly against the source data system. "
+                f"Conceptually, the query operates against the entire current state of those physical tables.\n"
+                f"    (Hint: Referencing physical tables is fully supported and intended for operations like JOINs or UNIONs to enrich your data, "
+                f"but they cannot entirely replace `{SQL.PROCESSING_VIEW_NAME}`).\n\n"
+                f"To transform the data currently being ingested, you must select from `{SQL.PROCESSING_VIEW_NAME}`."
+            )
             
         return select_exp
 
@@ -93,8 +98,8 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
             else:
                 origin_table = table_exp.sql(dialect=Dialects.SPARK, identify=False)
 
-            if table_exp.name.upper() == "DUAL" and not table_exp.db:
-                origin_table = "DUAL"
+            if table_exp.name.upper() == SQL.PROCESSING_VIEW_NAME and not table_exp.db:
+                origin_table = SQL.PROCESSING_VIEW_NAME
             elif not source: # Tables from Spark's built-in catalog
                 continue
             
@@ -112,7 +117,7 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
         for origin_table, predicate in origin2predicate.items():
             origin2tmp[origin_table] = f"temp_{uuid.uuid4().hex}"
             
-            if origin_table == "DUAL":
+            if origin_table == SQL.PROCESSING_VIEW_NAME:
                 origin2fetch_query[origin_table] = None
             elif source:
                 if source.dialect == "kafka":
@@ -152,6 +157,17 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
 
         return origin2tmp, origin2fetch_query
 
+    def _safe_fetch(fetch_func: t.Callable, fetch_query: t.Union[exp.Select, str]) -> t.Any:
+        """Attempts to fetch data, falling back to a query without a WHERE clause if the predicate is unsupported by the source engine."""
+        try:
+            return fetch_func(fetch_query)
+        except Exception as fe:
+            if isinstance(fetch_query, exp.Select):
+                fallback_query = fetch_query.copy()
+                fallback_query.args["where"] = None
+                return fetch_func(fallback_query)
+            raise fe
+
     @staticmethod
     def _prepare_spark_query(
         df: pyspark_sql.DataFrame,
@@ -172,7 +188,7 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
             else:
                 try:
                     if source:
-                        sub_df = source.fetch_pyspark_df(fetch_query)
+                        sub_df = SQL._safe_fetch(source.fetch_pyspark_df, fetch_query)
                     else:
                         sub_df = spark.sql(fetch_query)
                 except Exception as e:
@@ -207,9 +223,12 @@ class SQL(AbstractTransformerDecorator, SQLFunctionMixin):
                 try:
                     if source:
                         if not kwargs.get("source_limit"):
-                            sub_df = source.fetchdf(fetch_query)
+                            sub_df = SQL._safe_fetch(source.fetchdf, fetch_query)
                         else:
-                            sub_df = next(source.fetch_batch_df(fetch_query, kwargs.get("source_limit")))
+                            sub_df = SQL._safe_fetch(
+                                lambda q: next(source.fetch_batch_df(q, kwargs.get("source_limit"))), 
+                                fetch_query,
+                            )
                     else:
                         sub_df = conn.execute(fetch_query).df()
                 except Exception as e:
