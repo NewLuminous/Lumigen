@@ -151,8 +151,20 @@ class JobPreviewerBase(ABC):
                     else:
                         engine_dialect = Dialects.DUCKDB
                     select_exp = transformers.sql.SQL.parse_and_validate_query(query, engine_adapter_src, fallback_dialect=engine_dialect, **config.job_properties)
-                    for _ in select_exp.find_all(exp.Join):
+                    if select_exp.find(exp.Join):
                         return False
+                    if engine_dialect == Dialects.DUCKDB:
+                        if select_exp.find(exp.Unnest, exp.Explode):
+                            return False
+                        if select_exp.find(exp.GenerateSeries):
+                            return False
+                        for func_exp in select_exp.find_all(exp.Anonymous):
+                            func_name = func_exp.name.lower()
+                            if func_name in ("range",):
+                                return False
+                        for with_exp in select_exp.find_all(exp.With):
+                            if with_exp.args.get("recursive"):
+                                return False
         return True
 
     @abstractmethod
