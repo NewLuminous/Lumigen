@@ -132,8 +132,15 @@ class JobSourceRelatedFields(BaseModel):
         
         return data
     
-    def get_source_path(self, dialect: DialectType = None):
-        return self.source_path or extract_main_table(self.source_query, dialect=dialect)
+    def get_source_path(self) -> t.Optional[str]:
+        if self.source_path:
+            return self.source_path
+            
+        try:
+            return extract_main_table(self.source_query)
+        except ValueError:
+            # Query is valid but has no physical source table (e.g., SELECT 1, range())
+            return None
     
     def build_source_expression(self, dialect: t.Optional[str] = None) -> t.Union[exp.Select, str]:
         """

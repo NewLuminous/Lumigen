@@ -138,8 +138,11 @@ def extract_main_table(query: t.Union[exp.Expression, str],
         raise ValueError(f"Could not extract a main table from the query: {str(query)[:100]}...")
     
     if isinstance(table_name, exp.Table):
-        # Only keep the identifiers
-        table_name = exp.table_(*table_name.parts[::-1])
+        if table_name.name:
+            # Only keep the identifiers
+            table_name = exp.table_(*table_name.parts[::-1])
+        else:
+            raise ValueError(f"Query uses a table-generating function; no physical table found: {str(query)[:100]}...")
     if quoted is not None:
         for identifier_exp in table_name.find_all(exp.Identifier):
             identifier_exp.set("quoted", quoted)
@@ -253,7 +256,7 @@ class TablePushdownExtractor:
         
         # Find all tables and group them by their immediate parent scope
         for table_exp in parsed_ast.find_all(exp.Table):
-            if table_exp.name in self.cte_aliases:
+            if (not table_exp.name) or table_exp.name in self.cte_aliases:
                 continue
 
             scope = table_exp.find_ancestor(*self.scope_types)
