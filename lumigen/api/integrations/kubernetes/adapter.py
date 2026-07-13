@@ -168,9 +168,14 @@ class KubernetesAdapter(JobManagerAdapter):
             self._prune_jobs()
             return JobStatusResponse(job_id=id, job_name=name, status=JobStatus.PENDING, message=f"Job submitted to Kubernetes as '{resource_name}'.")
         except ApiException as e:
+            if e.status == 409: 
+                logger.info(f"Concurrent submission detected: Kubernetes Job '{resource_name}' already exists. Treating as success.")
+                return JobStatusResponse(job_id=id, job_name=name, status=JobStatus.PENDING, message=f"Job already submitted to Kubernetes as '{resource_name}'.")
+
             logger.error(f"Kubernetes API error while submitting job '{id}': {e.reason}")
             with suppress(ApiException):
-                self.batch_v1_api.delete_namespaced_job(name=resource_name, namespace=self.namespace)
+                self.batch_v1_api.delete_namespaced_job(name=resource_name, namespace=self.namespace, propagation_policy='Foreground')
+                self._cleanup_config_resources(resource_name)
             raise HTTPException(status_code=e.status, detail=f"Failed to submit job: {e.reason}")
     
     def stop_job(self, id: str) -> JobStatusResponse:
@@ -542,7 +547,10 @@ class KubernetesAdapter(JobManagerAdapter):
                         w.stop()
                         break
                 
-                logs = self.get_job_logs(temp_id)
+                try:
+                    logs = self.get_job_logs(temp_id)
+                except HTTPException:
+                    logs = "Logs unavailable. Pod was not created, stuck in Pending, or was already deleted."
                 if final_status is None:
                     error_msg = "Temp job did not complete within the timeout."
                     return DataFetchResponse(

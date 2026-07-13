@@ -2,14 +2,15 @@ from __future__ import annotations
 import typing as t
 from abc import ABC, abstractmethod
 import logging
+import threading
 
 if t.TYPE_CHECKING:
     from core.config.root import Config
     from core.config.connection import SparkConnectionConfig
-    from api.enums import JobStatus
-    from api.schemas import JobStatusResponse, JobInfoResponse, JobMetricsResponse
 
 from api.config import settings
+from api.enums import JobStatus
+from api.schemas import JobStatusResponse, JobInfoResponse, JobMetricsResponse
 from api.services.job_previewer import JobPreviewerBase
 
 logger = logging.getLogger(__name__)
@@ -20,10 +21,27 @@ class JobManagerAdapter(JobPreviewerBase, ABC):
     Abstract base class for job management adapters.
     Defines the interface that all adapters (Docker, Kubernetes, etc.) must implement.
     """
+    _submission_lock = threading.Lock()
+    _active_submissions = set()
 
     def submit_job(self, config: Config, id: str, name: t.Optional[str] = None) -> JobStatusResponse:
-        prepared_config = self._prepare_config_for_submission(config)
-        return self._perform_submit(config=prepared_config, id=id, name=name)
+        with self._submission_lock:
+            if id in self._active_submissions:
+                logger.info(f"Race condition prevented: Job '{id}' is already being submitted by another thread.")
+                return JobStatusResponse(
+                    job_id=id,
+                    job_name=name,
+                    status=JobStatus.INITIALIZING,
+                    message="Job submission is already in progress."
+                )
+            self._active_submissions.add(id)
+
+        try:
+            prepared_config = self._prepare_config_for_submission(config)
+            return self._perform_submit(config=prepared_config, id=id, name=name)
+        finally:
+            with self._submission_lock:
+                self._active_submissions.discard(id)
 
     @abstractmethod
     def _perform_submit(self, config: Config, id: str, name: t.Optional[str] = None) -> JobStatusResponse:

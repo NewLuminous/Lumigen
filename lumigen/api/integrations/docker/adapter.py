@@ -10,10 +10,11 @@ from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException
 from pathlib import Path
 from dateutil import parser
+from contextlib import suppress
 import tempfile
 import json
 import docker
-from docker.errors import ContainerError
+from docker import errors as docker_errors
 
 if t.TYPE_CHECKING:
     from core.config.root import Config
@@ -50,7 +51,7 @@ class DockerAdapter(JobManagerAdapter):
             logger.debug("Successfully connected to Docker daemon.")
 
             self._refresh_job_dict()
-        except docker.errors.DockerException as e:
+        except docker_errors.DockerException as e:
             logger.error(f"Could not connect to Docker daemon: {e}")
 
     def _perform_submit(self, config: Config, id: str, name: t.Optional[str]=None, checkpoint_dir: t.Optional[str]=None) -> JobStatusResponse:
@@ -105,9 +106,9 @@ class DockerAdapter(JobManagerAdapter):
                 else:
                     raise Exception(f"Unknown container status: {status}")
                 
-            except docker.errors.NotFound:
+            except docker_errors.NotFound:
                 pass
-            except docker.errors.APIError as e:
+            except docker_errors.APIError as e:
                 logger.error(f"Error handling existing container '{container_name}': {e}")
                 raise HTTPException(status_code=500, detail=f"Could not handle pre-existing container '{container_name}': {e}")
             
@@ -119,6 +120,7 @@ class DockerAdapter(JobManagerAdapter):
 
             logger.info(f"Attempting to run job '{id}' in container '{container_name}'")
             temp_config_file_host_path = None
+            container_launched = False
             try:
                 current_file_path = Path(__file__).resolve()
                 host_project_path = current_file_path.parent.parent.parent.parent
@@ -155,6 +157,7 @@ class DockerAdapter(JobManagerAdapter):
                     command=command,
                     tty=True,           # To unbuffer logging
                 )
+                container_launched = True 
                 self.job_dict[id].object = container
                 self.job_dict[id].name = container_name
                 self.jobs_by_name[name] = id
@@ -165,15 +168,27 @@ class DockerAdapter(JobManagerAdapter):
                     status=JobStatus.INITIALIZING,
                     message=f"Job submitted. Container: {container_name}"
                 )
-            except docker.errors.ImageNotFound:
+            except docker_errors.ImageNotFound:
                 logger.error(f"Docker image '{settings.JOB_IMAGE_NAME}' not found.")
                 raise HTTPException(status_code=500, detail=f"Docker image '{settings.JOB_IMAGE_NAME}' not found.")
-            except docker.errors.APIError as e:
+            except docker_errors.APIError as e:
+                if e.response is not None and e.response.status_code == 409:
+                    logger.info(f"Concurrent submission detected: Container '{container_name}' already exists. Treating as success.")
+                    return JobStatusResponse(
+                        job_id=id,
+                        job_name=name,
+                        status=JobStatus.PENDING,
+                        message=f"Job submitted concurrently. Container: {container_name}"
+                    )
+
                 logger.error(f"Docker API error when starting job '{id}': {e}")
                 raise HTTPException(status_code=500, detail=f"Could not start job '{id}'")
             except Exception as e:
                 logger.error(f"Unexpected error submitting job '{id}': {e}")
                 raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {e}")
+            finally:
+                if not container_launched and temp_config_file_host_path and os.path.exists(temp_config_file_host_path):
+                    with suppress(OSError): os.remove(temp_config_file_host_path)
         else:
             container = self.job_dict[id].object
             response = JobStatusResponse(
@@ -205,9 +220,9 @@ class DockerAdapter(JobManagerAdapter):
                     status=status,
                     message=f"Job '{id}' stopped successfully."
                 )
-            except docker.errors.NotFound as e:
+            except docker_errors.NotFound as e:
                 logger.debug(f"Failed to stop container '{container_info.name}' (ID: {container.short_id}): {e}")
-            except docker.errors.APIError as e:
+            except docker_errors.APIError as e:
                 logger.debug(f"Failed to stop container '{container_info.name}' (ID: {container.short_id}): {e}")
                 # Attempt to force remove if stop failed badly
                 try:
@@ -417,9 +432,9 @@ class DockerAdapter(JobManagerAdapter):
                 since=since,
             ).decode('utf-8')
             return logs
-        except docker.errors.NotFound as e:
+        except docker_errors.NotFound as e:
             raise HTTPException(status_code=404, detail=f"Job with ID '{id}' does not exist or was removed.")
-        except docker.errors.APIError as e:
+        except docker_errors.APIError as e:
             logger.error(f"Docker API error when fetching logs for container '{container.name}': {e}")
             raise HTTPException(status_code=500, detail=f"Could not retrieve logs for job '{id}'.")
         except Exception as e:
@@ -529,9 +544,9 @@ class DockerAdapter(JobManagerAdapter):
                     detail=error_msg,
                     logs=stdout_data,
                 )
-        except docker.errors.ImageNotFound:
+        except docker_errors.ImageNotFound:
             raise HTTPException(status_code=500, detail=f"Docker image '{settings.JOB_IMAGE_NAME}' not found.")
-        except docker.errors.APIError as e:
+        except docker_errors.APIError as e:
             raise HTTPException(status_code=500, detail=f"Could not start container: {e}")
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {e}")
@@ -619,7 +634,7 @@ class DockerAdapter(JobManagerAdapter):
             container_info.exit_code = container.attrs['State']["ExitCode"]
             container_info.started_at = container.attrs['State']['StartedAt']
             container_info.finished_at = container.attrs['State']['FinishedAt']
-        except (docker.errors.NotFound, docker.errors.APIError) as e:
+        except (docker_errors.NotFound, docker_errors.APIError) as e:
             if not force:
                 logger.warning(f"Failed to reload container '{container_info.name}' (ID: {container.short_id}): {e}")
             else:
@@ -640,7 +655,7 @@ class DockerAdapter(JobManagerAdapter):
                     container_info.latest_metrics = stats
                     return stats
                 time.sleep(0.1)
-            except docker.errors.NotFound: # Container might have stopped
+            except docker_errors.NotFound: # Container might have stopped
                 logger.warning(f"Container {container.short_id} not found during stats snapshot.")
                 return None
             except Exception as e:
@@ -659,7 +674,7 @@ class DockerAdapter(JobManagerAdapter):
             container.start()
             # Reset container info
             self.job_dict[job_id].restart()
-        except (docker.errors.NotFound, docker.errors.APIError) as e:
+        except (docker_errors.NotFound, docker_errors.APIError) as e:
             logger.error(f"Failed to start container '{container_info.name}' (ID: {container.short_id}): {e}")
 
     def _remove_container(self, job_id: str):
@@ -671,12 +686,12 @@ class DockerAdapter(JobManagerAdapter):
             container.remove(v=True, force=True)
             self.jobs_by_name[job_name].discard(job_id)
             self.job_dict.pop(job_id, None)
-        except docker.errors.NotFound as e:
+        except docker_errors.NotFound as e:
             logger.error(f"Failed to remove container '{container_info.name}' (ID: {container.short_id}): {e}")
             self.jobs_by_name[job_name].discard(job_id)
             self.job_dict.pop(job_id, None)
             raise e
-        except docker.errors.APIError as e:
+        except docker_errors.APIError as e:
             logger.error(f"Failed to remove container '{container_info.name}' (ID: {container.short_id}): {e}")
             raise e
         finally:
@@ -756,7 +771,7 @@ class DockerAdapter(JobManagerAdapter):
                 logger.debug(f"Pruning container for job '{job_id}' (reason: exceeded time limit).")
                 self._remove_container(job_id)
                 phase1_pruned_cnt += 1
-            except (docker.errors.NotFound, docker.errors.APIError) as e:
+            except (docker_errors.NotFound, docker_errors.APIError) as e:
                 continue
         logger.debug(f"Phase 1 pruning finished. Containers pruned: {phase1_pruned_cnt}.")
         total_pruned_cnt += phase1_pruned_cnt
@@ -780,7 +795,7 @@ class DockerAdapter(JobManagerAdapter):
                     "exit_code": container_info.exit_code,
                     "created_at": created_at
                 })
-            except (KeyError, ValueError, docker.errors.NotFound) as e:
+            except (KeyError, ValueError, docker_errors.NotFound) as e:
                 logger.warning(f"Could not process container '{container_info.name}' for count-based pruning: {e}")
                 continue
         job_ids_to_prune_by_count = set()
@@ -819,7 +834,7 @@ class DockerAdapter(JobManagerAdapter):
                 logger.info(f"Pruning container for job '{job_id}' (reason: exceeded count limit).")
                 self._remove_container(job_id)
                 phase2_pruned_cnt += 1
-            except (docker.errors.NotFound, docker.errors.APIError) as e:
+            except (docker_errors.NotFound, docker_errors.APIError) as e:
                 continue
         logger.debug(f"Phase 2 pruning finished. Containers pruned: {phase2_pruned_cnt}.")
         total_pruned_cnt += phase2_pruned_cnt
@@ -847,15 +862,15 @@ class DockerAdapter(JobManagerAdapter):
             result["stdout"] = container_output.decode('utf-8').strip()
             result["exit_code"] = 0
             logger.debug(f"Temp container completed successfully.")
-        except ContainerError as e:
+        except docker_errors.ContainerError as e:
             logger.error(f"Temp container exited with error (code {e.exit_status}): {e.stderr.decode('utf-8', 'replace')}")
             result["stderr"] = e.stderr.decode('utf-8', 'replace').strip() if e.stderr else ""
             result["exit_code"] = e.exit_status
             result["error"] = f"Container exited with code {e.exit_status}."
-        except docker.errors.ImageNotFound:
+        except docker_errors.ImageNotFound:
             logger.error(f"Docker image '{image_name}' not found.")
             raise
-        except docker.errors.APIError as e:
+        except docker_errors.APIError as e:
             logger.error(f"Docker API error: {e}")
             raise
         except Exception as e:
