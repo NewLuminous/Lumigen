@@ -2,6 +2,7 @@ clickhouse-connect>=0.9.1
 confluent-kafka==2.6.1
 Faker>=33.3.0
 findspark>=2.0.1
+odfpy>=1.4.1
 oracledb>=2.5.0
 polars>=1.31.0
 psycopg2-binary>=2.9.10
@@ -12,6 +13,9 @@ pyiceberg[pyiceberg-core,s3fs,hive,dynamodb,bigquery]>=0.11.1
 pymssql>=2.3.2
 pymysql>=1.1.1
 pyspark==3.3.3
+python-calamine>=0.8.2
 python-dotenv>=1.0.1
 sqlalchemy>=2.0.50
 sqlmesh==0.220.2
+xlrd>=2.0.2
+xlsxwriter>=3.2.9

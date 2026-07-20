@@ -8,7 +8,7 @@ import sys
 import typing as t
 from enum import Enum
 from functools import partial
-from pydantic import Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_core import from_json
 from sqlglot.helper import subclasses
 from sqlmesh.core.config.base import BaseConfig
@@ -782,6 +782,55 @@ class KafkaConnectionConfig(ConnectionConfig):
     
     def get_address(self) -> t.Optional[str]:
         return self.bootstrap_servers
+
+
+class FileOptions(BaseModel):
+    row_delimiter: str = Field(default="\n")
+    csv_field_delimiter: str = Field(default=",")
+
+
+class S3ConnectionConfig(ConnectionConfig):
+    endpoint_url: t.Optional[str] = None
+    s3_access_key_id: t.Optional[str] = None
+    s3_secret_access_key: t.Optional[str] = None
+    client_config: t.Optional[t.Dict[str, t.Any]] = {}
+    file_options: t.Optional[FileOptions] = None
+
+    concurrent_tasks: int = 4
+    register_comments: bool = False
+    pre_ping: bool = True
+
+    type_: Literal["s3"] = Field(alias="type", default="s3")
+
+    _engine_import_validator = _get_engine_import_validator("s3fs", "s3")
+
+    @property
+    def _connection_kwargs_keys(self) -> t.Set[str]:
+        return {
+            "endpoint_url",
+            "s3_access_key_id",
+            "s3_secret_access_key",
+            "client_config",
+        }
+
+    @property
+    def _engine_adapter(self) -> t.Type[EngineAdapter]:
+        return engine_adapter.FileSystemEngineAdapter
+
+    @property
+    def _connection_factory(self) -> t.Callable:
+        from engines.fs.s3.client import connect
+
+        return connect
+    
+    @property
+    def _extra_engine_config(self) -> t.Dict[str, t.Any]:
+        return {
+            "file_options": self.file_options.model_dump() if self.file_options else {}
+        }
+    
+    def get_address(self) -> t.Optional[str]:
+        return self.endpoint_url or self.client_config.get("endpoint_url")
 
 
 class SparkConnectionConfig(ConnectionConfig):

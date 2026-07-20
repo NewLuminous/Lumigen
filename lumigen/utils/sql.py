@@ -176,6 +176,8 @@ def dialect_insensitive_tbl_name(table_name: TableName, from_dialect: str) -> st
         return table_exp.sql()
     except ValueError:
         return str(table_name)
+    except ParseError:
+        return str(table_name)
     
 def identifier_requires_quoting(name: str, dialect_name: str, identify_setting: t.Union[str, bool] = "safe") -> bool:
     """
