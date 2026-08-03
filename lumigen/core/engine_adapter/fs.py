@@ -16,7 +16,6 @@ import pyspark.sql.functions as F
 
 if t.TYPE_CHECKING:
     from core._typing import DataFrameType
-    from sqlmesh.core.engine_adapter import EngineAdapter
     from sqlmesh.utils.connection_pool import ConnectionPool
 
 from core.config.job import DataLoadMode
@@ -36,7 +35,7 @@ class FileSystemEngineAdapter(
     SUPPORTS_TRANSACTIONS = False
     SUPPORTS_TUPLE_IN = False
     SUPPORTS_REPLACE_TABLE = False
-    SUPPORTS_QUERY_EXECUTION_TRACKING = True
+    SUPPORTS_QUERY_EXECUTION_TRACKING = False
 
     def __init__(
         self,

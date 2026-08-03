@@ -786,19 +786,70 @@ class KafkaConnectionConfig(ConnectionConfig):
 
 class FileOptions(BaseModel):
     row_delimiter: str = Field(default="\n")
-    csv_field_delimiter: str = Field(default=",")
+    field_delimiter: str = Field(default=",")
 
 
-class S3ConnectionConfig(ConnectionConfig):
-    endpoint_url: t.Optional[str] = None
-    s3_access_key_id: t.Optional[str] = None
-    s3_secret_access_key: t.Optional[str] = None
-    client_config: t.Optional[t.Dict[str, t.Any]] = {}
+class FileSystemConnectionConfig(ConnectionConfig):
     file_options: t.Optional[FileOptions] = None
 
     concurrent_tasks: int = 4
     register_comments: bool = False
     pre_ping: bool = True
+
+    @property
+    def _engine_adapter(self) -> t.Type[EngineAdapter]:
+        return engine_adapter.FileSystemEngineAdapter
+    
+    @property
+    def _extra_engine_config(self) -> t.Dict[str, t.Any]:
+        return {
+            "file_options": self.file_options.model_dump() if self.file_options else {}
+        }
+
+
+class HDFSConnectionConfig(FileSystemConnectionConfig):
+    host: str = "default"
+    port: int = 0
+    user: t.Optional[str] = None
+    kerb_ticket: t.Optional[str] = None
+    replication: int = 3
+    extra_conf: t.Optional[t.Dict[str, t.Any]] = {}
+
+    type_: Literal["hdfs"] = Field(alias="type", default="hdfs")
+
+    _engine_import_validator = _get_engine_import_validator("fsspec", "hdfs")
+
+    @property
+    def _connection_kwargs_keys(self) -> t.Set[str]:
+        return {
+            "host",
+            "port",
+            "user",
+            "kerb_ticket",
+            "replication",
+            "extra_conf",
+        }
+
+    @property
+    def _connection_factory(self) -> t.Callable:
+        from engines.fs.clients import HDFSConnection
+
+        return HDFSConnection
+
+    def get_address(self) -> t.Optional[str]:
+        addr_str = ""
+        if self.host:
+            addr_str += self.host
+        if self.port:
+            addr_str += f":{self.port}"
+        return addr_str if addr_str else None
+
+
+class S3ConnectionConfig(FileSystemConnectionConfig):
+    endpoint_url: t.Optional[str] = None
+    s3_access_key_id: t.Optional[str] = None
+    s3_secret_access_key: t.Optional[str] = None
+    client_config: t.Optional[t.Dict[str, t.Any]] = {}
 
     type_: Literal["s3"] = Field(alias="type", default="s3")
 
@@ -814,20 +865,10 @@ class S3ConnectionConfig(ConnectionConfig):
         }
 
     @property
-    def _engine_adapter(self) -> t.Type[EngineAdapter]:
-        return engine_adapter.FileSystemEngineAdapter
-
-    @property
     def _connection_factory(self) -> t.Callable:
-        from engines.fs.s3.client import connect
+        from engines.fs.clients import S3Connection
 
-        return connect
-    
-    @property
-    def _extra_engine_config(self) -> t.Dict[str, t.Any]:
-        return {
-            "file_options": self.file_options.model_dump() if self.file_options else {}
-        }
+        return S3Connection
     
     def get_address(self) -> t.Optional[str]:
         return self.endpoint_url or self.client_config.get("endpoint_url")
@@ -962,7 +1003,7 @@ CONNECTION_CONFIG_TO_TYPE = {
     for tpe in subclasses(
         __name__,
         ConnectionConfig,
-        exclude=(ConnectionConfig,),
+        exclude=(ConnectionConfig, FileSystemConnectionConfig),
     )
 }
 

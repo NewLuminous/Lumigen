@@ -26,7 +26,7 @@ class FileOperationType(Enum):
     
 class FileOptions(BaseModel):
     row_delimiter: str = Field(default="\n")
-    csv_field_delimiter: str = Field(default=",")
+    field_delimiter: str = Field(default=",")
 
 class FileRequest(BaseModel):
     """
