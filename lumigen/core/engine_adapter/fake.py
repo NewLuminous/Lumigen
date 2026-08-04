@@ -86,7 +86,7 @@ class FakeEngineAdapter(QueryBuilderMixin, FetchBatchMixin, EngineAdapterMixin):
 
         return expression.sql(**sql_gen_kwargs, copy=False)  # type: ignore
     
-    def get_all_data_objects(self, keyword: str="") -> t.List[t.Any]:
+    def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None) -> t.List[t.Any]:
         return []
     
     def build_query(

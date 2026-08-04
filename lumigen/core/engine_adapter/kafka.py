@@ -214,7 +214,7 @@ class KafkaEngineAdapter(
             exp.Identifier(this=catalog) if catalog else None,
         )
     
-    def get_all_data_objects(self, keyword: str="") -> t.List[DataObject]:
+    def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None) -> t.List[DataObject]:
         keyword = keyword.strip()
         cursor: KafkaClientCursor = self.cursor
         data_objects = []
@@ -227,6 +227,8 @@ class KafkaEngineAdapter(
                 name=topic,
                 type=DataObjectType.TABLE,
             ))
+            if limit is not None and len(data_objects) >= limit:
+                break
         return data_objects
     
     def determine_high_watermark(self, df: DataFrameType, watermark_field: str, current_watermark_value: t.Any) -> t.Any:

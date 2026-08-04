@@ -91,7 +91,10 @@ class HDFSConnection(FileSystemConnection):
 
     def exists(self, file_path: str) -> bool:
         cleaned_path = re.sub(r'^hdfs://(?:[^/]+)?', '', file_path) or '/'
-        return self.fs.exists(cleaned_path)
+        try:
+            return len(self.fs.ls(cleaned_path, detail=False)) > 0
+        except (FileNotFoundError, OSError):
+            return False
 
 class S3Connection(FileSystemConnection):
     def __init__(self, endpoint_url: t.Optional[str] = None,
@@ -127,4 +130,8 @@ class S3Connection(FileSystemConnection):
 
     def exists(self, file_path: str) -> bool:
         stripped_path = re.sub(r'^s3[a-z]?://', '', file_path)
-        return self.fs.exists(stripped_path)
+        try:
+            # Fast existence check avoiding 404 HEAD retries
+            return len(self.fs.ls(stripped_path, detail=False)) > 0
+        except (FileNotFoundError, OSError):
+            return False

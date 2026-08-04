@@ -40,6 +40,109 @@ class FileSystemCursor:
         # Strip s3://, s3a://, s3n:// schemes
         return re.sub(r'^s3[a-z]?://', '', path)
 
+    def _lazy_glob(self, target_path: str, modified_since: t.Optional[t.Any] = None, require_supported: bool = True) -> t.Iterator[t.Tuple[str, t.Dict[str, t.Any]]]:
+        """
+        Lazily evaluates glob patterns. Yields file metadata tuples one-by-one.
+        Universally replaces fsspec.glob() and fsspec.exists()
+        """
+        from glob import has_magic
+        import re
+        from fsspec.utils import glob_translate
+
+        def _matches_filter(path: str, info: t.Dict[str, t.Any]) -> bool:
+            if info.get("type") != "file":
+                return False
+            if require_supported:
+                ext = os.path.splitext(path)[-1].lower()
+                if FileHandlerFactory.get_handler(ext) is None:
+                    return False
+            if modified_since is not None:
+                mod_time = info.get("LastModified", info.get("mtime"))
+                if mod_time is None or mod_time <= modified_since:
+                    return False
+            return True
+
+        # SCENARIO A: Absolute Path (Single LS Query Optimization)
+        if not has_magic(target_path):
+            listing = None
+            try:
+                # AWS S3: Missing file -> [], Exact file -> [info], Dir -> [info1, info2]
+                # HDFS: Dir -> [info1, info2], Exact File -> raises ArrowIOError "Not a directory"
+                listing = self._fs.ls(target_path, detail=True)
+            except FileNotFoundError:
+                return
+            except OSError:
+                # Catch PyArrow's HDFS bug where ls() on a file raises an uncaught generic OSError
+                pass
+
+            if listing is None:
+                try:
+                    info = self._fs.info(target_path)
+                    listing = [info]
+                except (FileNotFoundError, OSError):
+                    return
+
+            if not listing:
+                return
+
+            # Normalized path comparison (PyArrow strips leading slashes in paths, so we strip both sides)
+            clean_target_stripped = target_path.strip("/")
+            
+            # Check if listing contains an exact single file match (prevents S3 prefix collision bugs)
+            exact_file = next(
+                (item for item in listing if item.get("name", "").strip("/") == clean_target_stripped and item.get("type") == "file"), 
+                None
+            )
+
+            # Case 1: Target is an exact single existing file
+            if exact_file is not None:
+                if _matches_filter(target_path, exact_file):
+                    yield (target_path, exact_file) # Yield exactly what the user asked for
+                return
+
+            # Case 2: Target is a directory (listing contains directory contents)
+            for item in listing:
+                path: str = item.get("name", "")
+                if _matches_filter(path, item):
+                    # Ensure leading slashes match user input
+                    if target_path.startswith("/") and not path.startswith("/"):
+                        path = "/" + path
+                    yield (path, item)
+            return
+
+        # SCENARIO B: Glob Pattern (Lazy Traversal)
+        # Identify the static root directory to start walking from
+        idx_star = target_path.find("*") if target_path.find("*") >= 0 else len(target_path)
+        idx_qmark = target_path.find("?") if target_path.find("?") >= 0 else len(target_path)
+        idx_brace = target_path.find("[") if target_path.find("[") >= 0 else len(target_path)
+        min_idx = min(idx_star, idx_qmark, idx_brace)
+
+        if "/" in target_path[:min_idx]:
+            min_idx = target_path[:min_idx].rindex("/")
+            root = target_path[: min_idx + 1]
+            depth = target_path[min_idx + 1 :].count("/") + 1
+        else:
+            root = ""
+            depth = target_path[min_idx + 1 :].count("/") + 1
+        if "**" in target_path:
+            depth = None # Unlimited depth walk
+
+        # Fix: HDFS throws IllegalArgumentException if root is "".
+        if root == "":
+            root = "/"
+
+        pattern = re.compile(glob_translate(target_path))
+        try:
+            for dirpath, dirs, files in self._fs.walk(root, maxdepth=depth, detail=True):
+                for name, info in files.items():
+                    full_path: str = info["name"]
+                    if target_path.startswith("/") and not full_path.startswith("/"):
+                        full_path = "/" + full_path
+                    if pattern.match(full_path) and _matches_filter(full_path, info):
+                        yield (full_path, info)
+        except (FileNotFoundError, OSError):
+            return
+
     def _infer_unified_schema(self, files: t.Dict[str, t.Dict[str, t.Any]], parsed_request: FileRequest) -> pd.DataFrame:
         """
         Quickly scans the headers/metadata of all matched files in parallel and merges them to determine the global, unified schema.
@@ -77,13 +180,7 @@ class FileSystemCursor:
 
         if parsed_request.operation == FileOperationType.READ:
             target_path = self._clean_path(parsed_request.file_pattern or parsed_request.file_path)
-            files: t.Dict[str, t.Dict[str, t.Any]] = self._fs.glob(target_path, detail=True)
-            if parsed_request.modified_since is not None:
-                files = {
-                    path: info for path, info in files.items()
-                    if info.get("LastModified", info.get("mtime")) is not None 
-                    and info.get("LastModified", info.get("mtime")) > parsed_request.modified_since
-                }
+            files = dict(self._lazy_glob(target_path, parsed_request.modified_since, require_supported=True))
             if not files:
                 return
 
@@ -102,13 +199,7 @@ class FileSystemCursor:
             self._row_iterator = row_generator()
         elif parsed_request.operation == FileOperationType.DESCRIBE:
             target_path = self._clean_path(parsed_request.file_pattern or parsed_request.file_path)
-            files: t.Dict[str, t.Dict[str, t.Any]] = self._fs.glob(target_path, detail=True)
-            if parsed_request.modified_since is not None:
-                files = {
-                    path: info for path, info in files.items()
-                    if info.get("LastModified", info.get("mtime")) is not None 
-                    and info.get("LastModified", info.get("mtime")) > parsed_request.modified_since
-                }
+            files = dict(self._lazy_glob(target_path, parsed_request.modified_since, require_supported=True))
             if not files:
                 self._last_df = pd.DataFrame(columns=["field", "type"])
                 return
@@ -139,46 +230,27 @@ class FileSystemCursor:
             cleaned_path = self._clean_path(parsed_request.file_path)
             self._append_single_file(df, cleaned_path, parsed_request.options)
         elif parsed_request.operation == FileOperationType.REMOVE:
-            if parsed_request.file_path:
-                cleaned_path = self._clean_path(parsed_request.file_path)
-                if self._fs.exists(cleaned_path):
-                    self._fs.rm(cleaned_path, recursive=True)
-            if parsed_request.file_pattern:
-                cleaned_path = self._clean_path(parsed_request.file_pattern)
-                files_to_remove = self._fs.glob(cleaned_path)
-                if files_to_remove:
-                    try:
-                        self._fs.rm(files_to_remove, recursive=True)
-                    except:
-                        for file_path in files_to_remove:
-                            self._fs.rm(file_path, recursive=True)
+            target_path = self._clean_path(parsed_request.file_pattern or parsed_request.file_path)
+            files_to_remove = [path for path, _ in self._lazy_glob(target_path, parsed_request.modified_since, require_supported=False)]
+            if files_to_remove:
+                try:
+                    self._fs.rm(files_to_remove, recursive=True)
+                except:
+                    for file_path in files_to_remove:
+                        self._fs.rm(file_path, recursive=True)
         elif parsed_request.operation == FileOperationType.LIST:
             target_path = self._clean_path(parsed_request.file_pattern or parsed_request.file_path)
-            files: t.Dict[str, t.Dict[str, t.Any]] = self._fs.glob(target_path, detail=True)
-            # Only list supported file extensions
-            files = {
-                path: info for path, info in files.items()
-                if FileHandlerFactory.get_handler(os.path.splitext(path)[-1]) is not None
-            }
-            if parsed_request.modified_since is not None:
-                files = {
-                    path: info for path, info in files.items()
-                    if info.get("LastModified", info.get("mtime")) is not None 
-                    and info.get("LastModified", info.get("mtime")) > parsed_request.modified_since
-                }
-            if files:
-                self._last_df = pd.DataFrame(
-                    {
-                        "file_path": path,
-                        "file_name": os.path.basename(path),
-                        "file_size": info.get("Size", info.get("size")),
-                        "file_modification_time": info.get("LastModified", info.get("mtime"))
-                    }
-                    for path, info in files.items()
-                )
-            else:
-                self._last_df = pd.DataFrame(columns=["file_path", "file_name", "file_size", "file_modification_time"])
-            self._row_iterator = self._last_df.itertuples(index=False, name=None)
+            self._last_df = pd.DataFrame({
+                "file_path": pd.Series(dtype="str"),
+                "file_name": pd.Series(dtype="str"),
+                "file_size": pd.Series(dtype="int64"),
+                "file_modification_time": pd.Series(dtype="datetime64[ns]") 
+            })
+
+            def list_generator():
+                for path, info in self._lazy_glob(target_path, parsed_request.modified_since, require_supported=True):
+                    yield (path, os.path.basename(path), info.get("size"), info.get("LastModified", info.get("mtime")))
+            self._row_iterator = list_generator()
         else:
             raise NotImplementedError(f"Operation {parsed_request.operation} is not implemented.")
 
@@ -269,7 +341,9 @@ class FileSystemCursor:
 
     def _append_single_file(self, df: pd.DataFrame, file_path: str, file_options: t.Optional[FileOptions] = None) -> t.Optional[pd.DataFrame]:
         cleaned_path = self._clean_path(file_path)
-        if not self._fs.exists(cleaned_path):
+        # Use _lazy_glob() instead of fsspec.exists()
+        existing_files = list(self._lazy_glob(cleaned_path, require_supported=False))
+        if not existing_files:
             return self._write_single_file(df, file_path, file_options)
 
         try:

@@ -272,7 +272,7 @@ class IcebergEngineAdapter(
             for row in df.itertuples()
         ]
     
-    def get_all_data_objects(self, keyword: str="") -> t.List[DataObject]:
+    def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None) -> t.List[DataObject]:
         keyword = keyword.strip()
         if '.' in keyword:
             schema = keyword.split('.')[0]
@@ -292,6 +292,8 @@ class IcebergEngineAdapter(
             show_kwargs["where"] = exp.Where(this=exp.column("table_schema").ilike(schema_pattern))
         query = exp.Show(**show_kwargs)
         df = self.fetchdf(query.sql(Dialects.MYSQL))
+        if limit is not None:
+            df = df.head(limit)
         return [
             DataObject(
                 schema=row.table_schema,

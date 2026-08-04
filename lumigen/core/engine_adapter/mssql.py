@@ -31,7 +31,7 @@ class MSSQLEngineAdapter(
             if kind.is_type(exp.DataType.Type.BINARY):
                 columns_to_types[column] = exp.DataType.build("VARBINARY(MAX)")
 
-    def get_all_data_objects(self, keyword: str="") -> t.List[DataObject]:
+    def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None) -> t.List[DataObject]:
         keyword = keyword.strip()
         if '.' in keyword:
             schema = keyword.split('.')[0]
@@ -58,6 +58,8 @@ class MSSQLEngineAdapter(
             query = query.where(exp.column("TABLE_NAME").like(table_pattern))
         if schema_pattern:
             query = query.where(exp.column("TABLE_SCHEMA").like(schema_pattern))
+        if limit is not None:
+            query = query.limit(limit)
         dataframe = self.fetchdf(query)
         return [
             DataObject(

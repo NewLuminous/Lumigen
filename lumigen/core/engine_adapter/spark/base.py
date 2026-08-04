@@ -125,7 +125,7 @@ class SparkEngineAdapter(
             )
         return data_objects
     
-    def get_all_data_objects(self, keyword: str="") -> t.List[DataObject]:
+    def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None) -> t.List[DataObject]:
         keyword = keyword.strip()
         if '.' in keyword:
             schema = keyword.split('.')[0]
@@ -135,4 +135,7 @@ class SparkEngineAdapter(
             schema = None
             table_pattern = f"*{keyword}*" if keyword else '*'
 
-        return self._get_data_objects(schema, {table_pattern})
+        data_objects = self._get_data_objects(schema, {table_pattern})
+        if limit is not None:
+            data_objects = data_objects[:limit]
+        return data_objects

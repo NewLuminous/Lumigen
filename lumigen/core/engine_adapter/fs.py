@@ -143,7 +143,7 @@ class FileSystemEngineAdapter(
     def _truncate_table(self, file_path: str) -> None:
         raise EngineAdapterError("Unsupported TRUNCATE operation for File sinks.")
     
-    def get_all_data_objects(self, keyword: str="") -> t.List[DataObject]:
+    def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None) -> t.List[DataObject]:
         data_objects = []
 
         request = json.dumps({
@@ -152,7 +152,10 @@ class FileSystemEngineAdapter(
             "options": self.file_options,
         })
         self.execute(request)
-        list_output = self.cursor.fetchall()
+        if limit is None:
+            list_output = self.cursor.fetchall()
+        else:
+            list_output = self.cursor.fetchmany(limit)
         for file_path, *_ in list_output:
             data_objects.append(DataObject(
                 schema="",

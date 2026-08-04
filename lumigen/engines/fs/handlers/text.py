@@ -66,9 +66,8 @@ class TextFileHandler(BaseFileHandler):
             new_text = clean_df.astype(str).apply(lambda row: col_delim.join(row), axis=1).str.cat(sep=row_delim) + row_delim
 
         file_buffer = io.BytesIO()
-        if fs.exists(file_path):
-            with fs.open(file_path, "rb") as f:
-                file_buffer.write(f.read())
+        with fs.open(file_path, "rb") as f:
+            file_buffer.write(f.read())
         
         file_buffer.write(new_text.encode("utf-8"))
         
