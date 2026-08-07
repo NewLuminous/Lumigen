@@ -40,7 +40,8 @@ class FileSystemCursor:
         # Strip s3://, s3a://, s3n:// schemes
         return re.sub(r'^s3[a-z]?://', '', path)
 
-    def _lazy_glob(self, target_path: str, modified_since: t.Optional[t.Any] = None, require_supported: bool = True) -> t.Iterator[t.Tuple[str, t.Dict[str, t.Any]]]:
+    def _lazy_glob(self, target_path: str, modified_since: t.Optional[t.Any] = None,
+                   require_supported: bool = True, strict_extension_check: bool = False) -> t.Iterator[t.Tuple[str, t.Dict[str, t.Any]]]:
         """
         Lazily evaluates glob patterns. Yields file metadata tuples one-by-one.
         Universally replaces fsspec.glob() and fsspec.exists()
@@ -48,6 +49,40 @@ class FileSystemCursor:
         from glob import has_magic
         import re
         from fsspec.utils import glob_translate
+
+        pre_fetched_listing = None
+        listing_fetched = False
+
+        # Explicit extension validation
+        if require_supported and strict_extension_check and not target_path.endswith("/"):
+            _, ext = os.path.splitext(target_path)
+            if ext and not has_magic(ext):
+                ext_lower = ext.lower()
+                if FileHandlerFactory.get_handler(ext_lower) is None:
+                    is_dir = False
+                    
+                    # If the path has magic (e.g. **/*.parquet), it's not an absolute directory name.
+                    # It's an explicit file search for an unsupported type. It can be rejected instantly.
+                    if not has_magic(target_path):
+                        # Edge Case: Absolute path might be a directory named with a dot (e.g. /data/my.folder)
+                        try:
+                            pre_fetched_listing = self._fs.ls(target_path, detail=True)
+                            listing_fetched = True
+                            clean_target_stripped = target_path.strip("/")
+                            
+                            exact_file = next(
+                                (item for item in pre_fetched_listing if item.get("name", "").strip("/") == clean_target_stripped and item.get("type") == "file"), 
+                                None
+                            )
+                            # If it's not an exact file, but items were returned, it's a directory
+                            if exact_file is None and len(pre_fetched_listing) > 0:
+                                is_dir = True
+                        except (FileNotFoundError, OSError):
+                            pass
+                    
+                    # If it's a file pattern or a missing path, raise the error.
+                    if not is_dir:
+                        raise ValueError(f"Explicitly requested file extension '{ext_lower}' is not supported.")
 
         def _matches_filter(path: str, info: t.Dict[str, t.Any]) -> bool:
             if info.get("type") != "file":
@@ -65,15 +100,18 @@ class FileSystemCursor:
         # SCENARIO A: Absolute Path (Single LS Query Optimization)
         if not has_magic(target_path):
             listing = None
-            try:
-                # AWS S3: Missing file -> [], Exact file -> [info], Dir -> [info1, info2]
-                # HDFS: Dir -> [info1, info2], Exact File -> raises ArrowIOError "Not a directory"
-                listing = self._fs.ls(target_path, detail=True)
-            except FileNotFoundError:
-                return
-            except OSError:
-                # Catch PyArrow's HDFS bug where ls() on a file raises an uncaught generic OSError
-                pass
+            if listing_fetched:
+                listing = pre_fetched_listing
+            else:
+                try:
+                    # AWS S3: Missing file -> [], Exact file -> [info], Dir -> [info1, info2]
+                    # HDFS: Dir -> [info1, info2], Exact File -> raises ArrowIOError "Not a directory"
+                    listing = self._fs.ls(target_path, detail=True)
+                except FileNotFoundError:
+                    return
+                except OSError:
+                    # Catch PyArrow's HDFS bug where ls() on a file raises an uncaught generic OSError
+                    pass
 
             if listing is None:
                 try:
@@ -180,7 +218,7 @@ class FileSystemCursor:
 
         if parsed_request.operation == FileOperationType.READ:
             target_path = self._clean_path(parsed_request.file_pattern or parsed_request.file_path)
-            files = dict(self._lazy_glob(target_path, parsed_request.modified_since, require_supported=True))
+            files = dict(self._lazy_glob(target_path, parsed_request.modified_since, require_supported=True, strict_extension_check=True))
             if not files:
                 return
 
@@ -199,7 +237,7 @@ class FileSystemCursor:
             self._row_iterator = row_generator()
         elif parsed_request.operation == FileOperationType.DESCRIBE:
             target_path = self._clean_path(parsed_request.file_pattern or parsed_request.file_path)
-            files = dict(self._lazy_glob(target_path, parsed_request.modified_since, require_supported=True))
+            files = dict(self._lazy_glob(target_path, parsed_request.modified_since, require_supported=True, strict_extension_check=True))
             if not files:
                 self._last_df = pd.DataFrame(columns=["field", "type"])
                 return

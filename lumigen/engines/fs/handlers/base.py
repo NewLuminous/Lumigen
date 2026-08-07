@@ -18,14 +18,23 @@ class BaseFileHandler(ABC):
 
     @abstractmethod
     def describe(self, fs: AbstractFileSystem, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> t.Optional[DataFrame]:
+        """
+        Returns a DataFrame containing exactly one row (i.e. first data row) when possible for lightweight schema inference.
+        """
         pass
 
     @abstractmethod
     def write(self, fs: AbstractFileSystem, df: DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> None:
+        """
+        Writes a DataFrame to a file, overwriting it if it already exists.
+        """
         pass
 
     @abstractmethod
     def append(self, fs: AbstractFileSystem, df: DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> None:
+        """
+        Appends data to an existing file, validating schema compatibility first.
+        """
         pass
 
 
