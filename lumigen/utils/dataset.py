@@ -6,10 +6,16 @@ from functools import singledispatch
 import datetime
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pyspark.sql
 import pyspark.sql.types as pyspark_types
+from pyspark.sql.pandas.types import from_arrow_schema
 from pyspark.sql.functions import col, date_format
 from sqlglot import exp
+
+# pandas.DataFrame.iteritems has been deprecated: https://pandas.pydata.org/pandas-docs/version/1.5/reference/api/pandas.DataFrame.iteritems.html
+if not hasattr(pd.DataFrame, "iteritems"):
+    pd.DataFrame.iteritems = pd.DataFrame.items
 
 if t.TYPE_CHECKING:
     from core._typing import DataFrameType
@@ -45,41 +51,103 @@ def get_columns_name(df: DataFrameType) -> t.List[str]:
 
 class DataFrameConverter:
     @staticmethod
+    def _preprocess_spark_df(df: pyspark.sql.DataFrame) -> t.Tuple[pyspark.sql.DataFrame, t.Dict[str, t.List[str]]]:
+        """
+        Harmonizes Spark data types (Decimal, Timestamp) before converting to Pandas.
+        """
+        col_group_by_dtype = defaultdict(list)
+        for column in df.dtypes:
+            col_dtype = extract_name_wo_params(column[1])
+            col_group_by_dtype[col_dtype].append(column[0])
+            
+        if col_group_by_dtype.get("decimal"):
+            # There is no decimal data type in Pandas so convert all decimal data type to double type
+            df = df.withColumns({c: col(c).cast(pyspark_types.DoubleType()) for c in col_group_by_dtype.get("decimal")})
+        if col_group_by_dtype.get("timestamp"):
+            # Set timestamp columns to string using date_format function
+            df = df.withColumns({c: date_format(c, "yyyy-MM-dd HH:mm:ss.SSS") for c in col_group_by_dtype.get("timestamp")})
+            
+        return df, col_group_by_dtype
+
+    @staticmethod
+    def _postprocess_pandas_df(pdf: pd.DataFrame, col_group_by_dtype: t.Dict[str, t.List[str]]) -> pd.DataFrame:
+        """
+        Applies final type conversions (Binary, Timestamp, Structs) natively on the Pandas DataFrame.
+        """
+        for column_header in col_group_by_dtype.get("binary", []):
+            pdf[column_header] = pdf[column_header].map(bytes, na_action="ignore")
+        for column_header in col_group_by_dtype.get("timestamp", []):
+            pdf[column_header] = pdf[column_header].astype("datetime64[ns]")
+        for column_header in col_group_by_dtype.get("struct", []):
+            pdf[column_header] = pdf[column_header].map(
+                lambda x: t.cast("pyspark_types.Row", x).asDict(recursive=True) if hasattr(x, "asDict") else x,
+                na_action="ignore"
+            )
+        return pdf
+
+    @staticmethod
     def to_spark(df: DataFrameType, spark: pyspark.sql.SparkSession) -> pyspark.sql.DataFrame:            
         if isinstance(df, pd.DataFrame):
-            # pandas.DataFrame.iteritems has been deprecated: https://pandas.pydata.org/pandas-docs/version/1.5/reference/api/pandas.DataFrame.iteritems.html
-            if not hasattr(df, "iteritems"):
-                df.iteritems = df.items
-            df = spark.createDataFrame(df)
+            if df.empty:
+                arrow_schema = pa.Schema.from_pandas(df)
+                schema = from_arrow_schema(arrow_schema)
+                fields = []
+                for field in schema.fields:
+                    if isinstance(field.dataType, pyspark_types.NullType):
+                        fields.append(pyspark_types.StructField(field.name, pyspark_types.StringType(), field.nullable))
+                    else:
+                        fields.append(field)
+                schema = pyspark_types.StructType(fields)
+                return spark.createDataFrame([], schema=schema)
+            else:
+                return spark.createDataFrame(df)
             
         return df
 
     @staticmethod
     def to_pandas(df: DataFrameType) -> pd.DataFrame:
         if isinstance(df, pyspark.sql.DataFrame):
-            col_group_by_dtype = defaultdict(list)
-            for column in df.dtypes:
-                col_dtype = extract_name_wo_params(column[1])
-                col_group_by_dtype[col_dtype].append(column[0])
-            if col_group_by_dtype.get("decimal"):
-                # There is no decimal data type in Pandas so convert all decimal data type to double type
-                df = df.withColumns({c: col(c).cast(pyspark_types.DoubleType()) for c in col_group_by_dtype.get("decimal")})
-            if col_group_by_dtype.get("timestamp"):
-                # Set timestamp columns to string using date_format function
-                df = df.withColumns({c: date_format(c, "yyyy-MM-dd HH:mm:ss.SSS") for c in col_group_by_dtype.get("timestamp")})
+            df, col_group_by_dtype = DataFrameConverter._preprocess_spark_df(df)
 
-            df = df.toPandas()
-            for column_header in col_group_by_dtype.get("binary", []):
-                df[column_header] = df[column_header].map(bytes, na_action="ignore")
-            for column_header in col_group_by_dtype.get("timestamp", []):
-                df[column_header] = df[column_header].astype("datetime64[ns]")
-            for column_header in col_group_by_dtype.get("struct", []):
-                df[column_header] = df[column_header].map(
-                    lambda x: t.cast("pyspark_types.Row", x).asDict(recursive=True) if hasattr(x, "asDict") else x,
-                    na_action="ignore"
-                )
+            spark = df.sparkSession
+            orig_arrow_setting = spark.conf.get("spark.sql.execution.arrow.pyspark.enabled", "false")
+            try:
+                # Enable PyArrow to eliminate Py4J JVM-to-Python serialization overhead
+                spark.conf.set("spark.sql.execution.arrow.pyspark.enabled", "true")
+                df = df.toPandas()
+            except:
+                spark.conf.set("spark.sql.execution.arrow.pyspark.enabled", "false")
+                df = df.toPandas()
+            finally:
+                spark.conf.set("spark.sql.execution.arrow.pyspark.enabled", orig_arrow_setting)
+
+            df = DataFrameConverter._postprocess_pandas_df(df, col_group_by_dtype)
         
         return df
+
+    @staticmethod
+    def to_pandas_chunks(df: DataFrameType, chunk_size: int = 50_000) -> t.Iterator[pd.DataFrame]:
+        """
+        Streams a DataFrame in memory-safe Pandas chunks.
+        """
+        if isinstance(df, pd.DataFrame):
+            for i in range(0, len(df), chunk_size):
+                yield df.iloc[i : i + chunk_size]
+
+        elif isinstance(df, pyspark.sql.DataFrame):
+            df, col_group_by_dtype = DataFrameConverter._preprocess_spark_df(df)
+
+            columns = df.columns
+            batch = []
+            for row in df.toLocalIterator():
+                batch.append(row)
+                if len(batch) >= chunk_size:
+                    chunk_pdf = pd.DataFrame(batch, columns=columns)
+                    yield DataFrameConverter._postprocess_pandas_df(chunk_pdf, col_group_by_dtype)
+                    batch = []
+            if batch:
+                chunk_pdf = pd.DataFrame(batch, columns=columns)
+                yield DataFrameConverter._postprocess_pandas_df(chunk_pdf, col_group_by_dtype)
         
     @staticmethod
     def to_records(df: DataFrameType) -> t.List[t.Dict[str, t.Any]]:

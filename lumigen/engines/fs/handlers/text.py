@@ -35,9 +35,8 @@ class TextFileHandler(BaseFileHandler):
     def describe(self, fs: AbstractFileSystem, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> t.Optional[pd.DataFrame]:
         return pd.DataFrame({self.COLUMN_NAME: [""]})
 
-    def write(self, fs: AbstractFileSystem, df: pd.DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> None:
-        metadata_cols = [col for col in df.columns if str(col).startswith(metadata_prefix)]
-        clean_df = t.cast("pd.DataFrame", df.drop(columns=metadata_cols, errors="ignore"))
+    def _write_impl(self, fs: AbstractFileSystem, df: pd.DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> pd.DataFrame:
+        clean_df = t.cast("pd.DataFrame", self._drop_metadata_columns(df, metadata_prefix))
         
         row_delim = options.row_delimiter if (options and options.row_delimiter) else '\n'
         col_delim = options.field_delimiter if (options and options.field_delimiter) else ','
@@ -53,9 +52,10 @@ class TextFileHandler(BaseFileHandler):
         with fs.open(file_path, "wb") as f:
             f.write(content.encode("utf-8"))
 
-    def append(self, fs: AbstractFileSystem, df: pd.DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> None:
-        metadata_cols = [col for col in df.columns if str(col).startswith(metadata_prefix)]
-        clean_df = t.cast("pd.DataFrame", df.drop(columns=metadata_cols, errors="ignore"))
+        return clean_df
+
+    def _append_impl(self, fs: AbstractFileSystem, df: pd.DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> pd.DataFrame:
+        clean_df = t.cast("pd.DataFrame", self._drop_metadata_columns(df, metadata_prefix))
         
         row_delim = options.row_delimiter if (options and options.row_delimiter) else "\n"
         col_delim = options.field_delimiter if (options and options.field_delimiter) else ","
@@ -74,3 +74,5 @@ class TextFileHandler(BaseFileHandler):
         file_buffer.seek(0)
         with fs.open(file_path, "wb") as f:
             f.write(file_buffer.read())
+
+        return clean_df

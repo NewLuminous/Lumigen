@@ -4,6 +4,9 @@ import logging
 import os
 import re
 import pandas as pd
+import datetime
+from glob import has_magic
+from fsspec.utils import glob_translate
 import threading
 import queue
 from concurrent.futures import ThreadPoolExecutor
@@ -31,25 +34,59 @@ class FileSystemCursor:
 
     @staticmethod
     def _clean_path(path: str) -> str:
+        """
+        Removes any RFC 3986 compliant URI scheme (e.g., s3a://, file://, gs://).
+        For HDFS, both the scheme and connection authority are removed.
+        """
         if not path:
             return path
-        # Strip hdfs://host:port/ or hdfs:/// scheme
+            
+        # HDFS-specific authority stripping
         if path.startswith("hdfs://"):
             cleaned = re.sub(r'^hdfs://(?:[^/]+)?', '', path)
             return cleaned if cleaned else "/"
-        # Strip s3://, s3a://, s3n:// schemes
-        return re.sub(r'^s3[a-z]?://', '', path)
+            
+        # Universal scheme stripping (handles any alphanumeric scheme followed by ://)
+        return re.sub(r'^[a-zA-Z][a-zA-Z0-9+.-]*://', '', path)
+
+    @staticmethod
+    def _normalize_mtime(info: dict) -> datetime.datetime:
+        """
+        Converts any fsspec file modification time into a standardized, timezone-aware UTC datetime.
+        """
+        mtime = info.get("LastModified") or info.get("mtime") or info.get("time")
+        
+        if mtime is None:
+            return None
+            
+        # Timezone-aware datetime (e.g., s3fs, sftpfs)
+        if isinstance(mtime, datetime.datetime) and mtime.tzinfo is not None:
+            return mtime.astimezone(datetime.timezone.utc)
+            
+        # Timezone-naive datetime (e.g., some HDFS / PyArrow versions)
+        if isinstance(mtime, datetime.datetime) and mtime.tzinfo is None:
+            return mtime.replace(tzinfo=datetime.timezone.utc)
+            
+        # Float / Integer epoch timestamp (e.g., LocalFileSystem / os.stat)
+        if isinstance(mtime, (int, float)):
+            return datetime.datetime.fromtimestamp(mtime, tz=datetime.timezone.utc)
+            
+        # Pandas / Numpy Timestamp
+        if hasattr(mtime, "to_pydatetime"):
+            py_dt = mtime.to_pydatetime()
+            if py_dt.tzinfo is None:
+                return py_dt.replace(tzinfo=datetime.timezone.utc)
+            return py_dt.astimezone(datetime.timezone.utc)
+            
+        return None
 
     def _lazy_glob(self, target_path: str, modified_since: t.Optional[t.Any] = None,
+                   require_file_exists: bool = False,
                    require_supported: bool = True, strict_extension_check: bool = False) -> t.Iterator[t.Tuple[str, t.Dict[str, t.Any]]]:
         """
         Lazily evaluates glob patterns. Yields file metadata tuples one-by-one.
         Universally replaces fsspec.glob() and fsspec.exists()
         """
-        from glob import has_magic
-        import re
-        from fsspec.utils import glob_translate
-
         pre_fetched_listing = None
         listing_fetched = False
 
@@ -92,8 +129,8 @@ class FileSystemCursor:
                 if FileHandlerFactory.get_handler(ext) is None:
                     return False
             if modified_since is not None:
-                mod_time = info.get("LastModified", info.get("mtime"))
-                if mod_time is None or mod_time <= modified_since:
+                mtime = self._normalize_mtime(info)
+                if mtime is not None and mtime <= modified_since:
                     return False
             return True
 
@@ -108,6 +145,8 @@ class FileSystemCursor:
                     # HDFS: Dir -> [info1, info2], Exact File -> raises ArrowIOError "Not a directory"
                     listing = self._fs.ls(target_path, detail=True)
                 except FileNotFoundError:
+                    if require_file_exists and os.path.splitext(target_path)[1]:
+                        raise FileNotFoundError(f"No such file: '{target_path}'")
                     return
                 except OSError:
                     # Catch PyArrow's HDFS bug where ls() on a file raises an uncaught generic OSError
@@ -184,7 +223,7 @@ class FileSystemCursor:
     def _infer_unified_schema(self, files: t.Dict[str, t.Dict[str, t.Any]], parsed_request: FileRequest) -> pd.DataFrame:
         """
         Quickly scans the headers/metadata of all matched files in parallel and merges them to determine the global, unified schema.
-        Returns an empty DataFrame containing only the resolved columns and datatypes.
+        Returns the combined DataFrame, retaining the rows for downstream schema inference.
         """
         df_list = []
         with ThreadPoolExecutor(max_workers=parsed_request.concurrency) as executor:
@@ -204,7 +243,7 @@ class FileSystemCursor:
             return pd.DataFrame()
             
         combined_df: pd.DataFrame = pd.concat(df_list, ignore_index=True)
-        return combined_df.iloc[0:0]  # Return 0 rows, strictly for schema retention
+        return combined_df
 
     def execute(self, request: str, payload: t.Optional[t.Any] = None, **kwargs) -> None:
         self._last_df = None
@@ -218,7 +257,10 @@ class FileSystemCursor:
 
         if parsed_request.operation == FileOperationType.READ:
             target_path = self._clean_path(parsed_request.file_pattern or parsed_request.file_path)
-            files = dict(self._lazy_glob(target_path, parsed_request.modified_since, require_supported=True, strict_extension_check=True))
+            files = dict(self._lazy_glob(
+                target_path, parsed_request.modified_since,
+                require_file_exists=True, require_supported=True, strict_extension_check=True,
+            ))
             if not files:
                 return
 
@@ -237,7 +279,10 @@ class FileSystemCursor:
             self._row_iterator = row_generator()
         elif parsed_request.operation == FileOperationType.DESCRIBE:
             target_path = self._clean_path(parsed_request.file_pattern or parsed_request.file_path)
-            files = dict(self._lazy_glob(target_path, parsed_request.modified_since, require_supported=True, strict_extension_check=True))
+            files = dict(self._lazy_glob(
+                target_path, parsed_request.modified_since,
+                require_file_exists=True, require_supported=True, strict_extension_check=True,
+            ))
             if not files:
                 self._last_df = pd.DataFrame(columns=["field", "type"])
                 return
@@ -287,15 +332,15 @@ class FileSystemCursor:
 
             def list_generator():
                 for path, info in self._lazy_glob(target_path, parsed_request.modified_since, require_supported=True):
-                    yield (path, os.path.basename(path), info.get("size"), info.get("LastModified", info.get("mtime")))
+                    yield (path, os.path.basename(path), info.get("Size", info.get("size")), self._normalize_mtime(info))
             self._row_iterator = list_generator()
         else:
             raise NotImplementedError(f"Operation {parsed_request.operation} is not implemented.")
 
-    def _generate_read_chunks(self, files: t.Dict[str, t.Any], parsed_request: FileRequest, unified_schema_df: pd.DataFrame) -> t.Iterator[pd.DataFrame]:
+    def _generate_read_chunks(self, files: t.Dict[str, t.Dict[str, t.Any]], parsed_request: FileRequest, unified_schema_df: t.Optional[pd.DataFrame] = None) -> t.Iterator[pd.DataFrame]:
         # Bounding the queue forces background threads to pause reading if the consumer gets too slow.
         chunk_queue = queue.Queue(maxsize=parsed_request.concurrency * 2)
-        master_columns = list(unified_schema_df.columns)
+        master_columns = list(unified_schema_df.columns) if unified_schema_df is not None else None
         stop_event = threading.Event()
 
         def worker(path, info):
@@ -303,11 +348,16 @@ class FileSystemCursor:
                 for chunk_df in self._read_file_chunks(path, info, parsed_request.options):
                     if stop_event.is_set():
                         return
-                    # Missing columns become NaN. Unwanted extra columns are dropped.
-                    aligned_df = chunk_df.reindex(columns=master_columns)
+
+                    if master_columns is not None:
+                        # Missing columns become NaN. Unwanted extra columns are dropped.
+                        processed_df = chunk_df.reindex(columns=master_columns)
+                    else:
+                        processed_df = chunk_df
+
                     while not stop_event.is_set():
                         try:
-                            chunk_queue.put(("data", aligned_df), timeout=1.0)
+                            chunk_queue.put(("data", processed_df), timeout=1.0)
                             break
                         except queue.Full:
                             continue
@@ -338,6 +388,7 @@ class FileSystemCursor:
             stop_event.set()
 
     def _read_file_chunks(self, file_path: str, file_info: t.Dict[str, t.Any], file_options: FileOptions) -> t.Iterator[pd.DataFrame]:
+        file_path = self._clean_path(file_path)
         _, file_ext = os.path.splitext(file_path.lower())
         handler = FileHandlerFactory.get_handler(file_ext)
         if not handler:
@@ -348,7 +399,7 @@ class FileSystemCursor:
                 df[self.METADATA_COLUMN_PREFIX+"file_path"] = file_path
                 df[self.METADATA_COLUMN_PREFIX+"file_name"] = os.path.basename(file_path)
                 df[self.METADATA_COLUMN_PREFIX+"file_size"] = file_info.get("Size", file_info.get("size"))
-                df[self.METADATA_COLUMN_PREFIX+"file_modification_time"] = file_info.get("LastModified", file_info.get("mtime"))
+                df[self.METADATA_COLUMN_PREFIX+"file_modification_time"] = self._normalize_mtime(file_info)
                 yield df
     
     def _describe_single_file(self, file_path: str, file_info: t.Dict[str, t.Any] = {}, file_options: t.Optional[FileOptions] = None) -> t.Optional[pd.DataFrame]:
@@ -362,10 +413,10 @@ class FileSystemCursor:
             df[self.METADATA_COLUMN_PREFIX+"file_path"] = file_path
             df[self.METADATA_COLUMN_PREFIX+"file_name"] = os.path.basename(file_path)
             df[self.METADATA_COLUMN_PREFIX+"file_size"] = file_info.get("Size", file_info.get("size"))
-            df[self.METADATA_COLUMN_PREFIX+"file_modification_time"] = file_info.get("LastModified", file_info.get("mtime"))
+            df[self.METADATA_COLUMN_PREFIX+"file_modification_time"] = self._normalize_mtime(file_info)
         return df
     
-    def _write_single_file(self, df: pd.DataFrame, file_path: str, file_options: t.Optional[FileOptions] = None) -> t.Optional[pd.DataFrame]:
+    def _write_single_file(self, df: pd.DataFrame, file_path: str, file_options: t.Optional[FileOptions] = None) -> None:
         try:
             _, file_ext = os.path.splitext(file_path.lower())
             handler = FileHandlerFactory.get_handler(file_ext)
@@ -377,7 +428,7 @@ class FileSystemCursor:
             logger.error(f"Failed to write file to {file_path}.", exc_info=e)
             raise
 
-    def _append_single_file(self, df: pd.DataFrame, file_path: str, file_options: t.Optional[FileOptions] = None) -> t.Optional[pd.DataFrame]:
+    def _append_single_file(self, df: pd.DataFrame, file_path: str, file_options: t.Optional[FileOptions] = None) -> None:
         cleaned_path = self._clean_path(file_path)
         # Use _lazy_glob() instead of fsspec.exists()
         existing_files = list(self._lazy_glob(cleaned_path, require_supported=False))
@@ -396,8 +447,11 @@ class FileSystemCursor:
             raise
 
     def fetchdf(self) -> pd.DataFrame:
-        if self._row_iterator is None or self._last_df is None:
+        if self._last_df is None:
             return pd.DataFrame()
+
+        if self._row_iterator is None:
+            return self._last_df.iloc[0:0] # Preserves schema
             
         remaining_rows = list(self._row_iterator)
         if not remaining_rows:

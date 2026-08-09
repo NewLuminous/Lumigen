@@ -50,31 +50,31 @@ class ORCFileHandler(BaseFileHandler):
                 # Return an empty DataFrame with the expected columns
                 return pd.DataFrame(columns=orc_file.schema.names)
 
-    def write(
+    def _write_impl(
         self, 
         fs: AbstractFileSystem, 
         df: pd.DataFrame, 
         file_path: str, 
         options: t.Optional[FileOptions], 
         metadata_prefix: str
-    ) -> None:
-        metadata_cols = [col for col in df.columns if str(col).startswith(metadata_prefix)]
-        clean_df = df.drop(columns=metadata_cols, errors="ignore")
+    ) -> pd.DataFrame:
+        clean_df = self._drop_metadata_columns(df, metadata_prefix)
 
         table = pa.Table.from_pandas(clean_df, preserve_index=False)
         with fs.open(file_path, "wb") as f:
             orc.write_table(table, f)
 
-    def append(
+        return clean_df
+
+    def _append_impl(
         self, 
         fs: AbstractFileSystem, 
         df: pd.DataFrame, 
         file_path: str, 
         options: t.Optional[FileOptions], 
         metadata_prefix: str
-    ) -> None:
-        metadata_cols = [col for col in df.columns if str(col).startswith(metadata_prefix)]
-        new_df = df.drop(columns=metadata_cols, errors="ignore")
+    ) -> pd.DataFrame:
+        new_df = self._drop_metadata_columns(df, metadata_prefix)
         new_table = pa.Table.from_pandas(new_df, preserve_index=False)
 
         # Read existing ORC dataset
@@ -94,3 +94,5 @@ class ORCFileHandler(BaseFileHandler):
         combined_table = pa.concat_tables([existing_table, new_table])
         with fs.open(file_path, "wb") as f:
             orc.write_table(combined_table, f)
+
+        return new_df

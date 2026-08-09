@@ -24,7 +24,7 @@ from core.engine_adapter.iceberg import IcebergEngineAdapter
 from core.engine_adapter.kafka import KafkaEngineAdapter
 from core.engine_adapter.fs import FileSystemEngineAdapter
 from core.engine_adapter.spark import (
-    SparkEngineAdapter, SparkClickHouseEngineAdapter, SparkJDBCEngineAdapter, SparkKafkaEngineAdapter,
+    SparkEngineAdapter, SparkClickHouseEngineAdapter, SparkFileSystemEngineAdapter, SparkJDBCEngineAdapter, SparkKafkaEngineAdapter,
 )
 
 DIALECT_TO_ENGINE_ADAPTER = {

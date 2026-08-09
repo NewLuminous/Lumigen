@@ -74,9 +74,9 @@ class ExcelFileHandler(BaseFileHandler):
                 sheet_df[metadata_prefix + "excel_sheet_name"] = sheet_name
             return pd.concat(sheets_dict.values(), ignore_index=True)
 
-    def write(self, fs: AbstractFileSystem, df: pd.DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> None:
+    def _write_impl(self, fs: AbstractFileSystem, df: pd.DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> pd.DataFrame:
+        clean_df = self._drop_metadata_columns(df, metadata_prefix)
         _, file_ext = os.path.splitext(file_path.lower())
-        metadata_cols = [col for col in df.columns if str(col).startswith(metadata_prefix)]
         
         if file_ext in (".xlsx", ".xlsm", ".xltx", ".xltm"):
             try:
@@ -97,15 +97,16 @@ class ExcelFileHandler(BaseFileHandler):
                 if sheet_name_col in df.columns:
                     for sheet_name, group in df.groupby(sheet_name_col):
                         sheet_name_str = str(sheet_name) if pd.notna(sheet_name) else "Sheet1"
-                        clean_group: pd.DataFrame = group.drop(columns=metadata_cols, errors="ignore")
+                        clean_group: pd.DataFrame = self._drop_metadata_columns(group, metadata_prefix)
                         clean_group.to_excel(writer, sheet_name=sheet_name_str, index=False)
                 else:
-                    clean_df: pd.DataFrame = df.drop(columns=metadata_cols, errors="ignore")
                     clean_df.to_excel(writer, sheet_name="Sheet1", index=False)
 
-    def append(self, fs: AbstractFileSystem, df: pd.DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> None:
+        return clean_df
+
+    def _append_impl(self, fs: AbstractFileSystem, df: pd.DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> pd.DataFrame:
+        clean_df = self._drop_metadata_columns(df, metadata_prefix)
         _, file_ext = os.path.splitext(file_path.lower())
-        metadata_cols = [col for col in df.columns if str(col).startswith(metadata_prefix)]
         
         file_buffer = io.BytesIO()
         with fs.open(file_path, "rb") as f:
@@ -126,9 +127,9 @@ class ExcelFileHandler(BaseFileHandler):
             if sheet_name_col in df.columns:
                 for sheet_name, group in df.groupby(sheet_name_col):
                     sheet_name_str = str(sheet_name) if pd.notna(sheet_name) else "Sheet1"
-                    sheets_to_append[sheet_name_str] = group.drop(columns=metadata_cols, errors="ignore")
+                    sheets_to_append[sheet_name_str] = self._drop_metadata_columns(group, metadata_prefix)
             else:
-                sheets_to_append["Sheet1"] = df.drop(columns=metadata_cols, errors="ignore")
+                sheets_to_append["Sheet1"] = clean_df
 
             file_buffer.seek(0)
             excel_file = pd.ExcelFile(file_buffer, engine=engine)
@@ -198,3 +199,5 @@ class ExcelFileHandler(BaseFileHandler):
                 f.write(file_buffer.read())
         finally:
             file_buffer.close()
+
+        return clean_df

@@ -6,9 +6,9 @@ from engines.fs.handlers.text import TextFileHandler
 
 FileHandlerFactory.register(
     [".xls", ".xlsx", ".xlsm", ".xlsb", ".ods", ".xlt", ".xltx", ".xltm", ".ots"], 
-    ExcelFileHandler()
+    ExcelFileHandler
 )
-FileHandlerFactory.register([".orc"], ORCFileHandler())
-FileHandlerFactory.register([".txt", ".log", ".dat"], TextFileHandler())
+FileHandlerFactory.register([".orc"], ORCFileHandler)
+FileHandlerFactory.register([".txt", ".log", ".dat"], TextFileHandler)
 
 __all__ = ["FileHandlerFactory", "BaseFileHandler"]
