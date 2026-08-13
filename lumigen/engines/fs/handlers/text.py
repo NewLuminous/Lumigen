@@ -35,7 +35,7 @@ class TextFileHandler(BaseFileHandler):
     def describe(self, fs: AbstractFileSystem, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> t.Optional[pd.DataFrame]:
         return pd.DataFrame({self.COLUMN_NAME: [""]})
 
-    def _write_impl(self, fs: AbstractFileSystem, df: pd.DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> pd.DataFrame:
+    def _write_impl(self, fs: AbstractFileSystem, df: pd.DataFrame, write_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> pd.DataFrame:
         clean_df = t.cast("pd.DataFrame", self._drop_metadata_columns(df, metadata_prefix))
         
         row_delim = options.row_delimiter if (options and options.row_delimiter) else '\n'
@@ -49,12 +49,12 @@ class TextFileHandler(BaseFileHandler):
             # If multiple non-metadata columns exist, join fields using col_delim
             content = clean_df.astype(str).apply(lambda row: col_delim.join(row), axis=1).str.cat(sep=row_delim) + row_delim
 
-        with fs.open(file_path, "wb") as f:
+        with fs.open(write_path, "wb") as f:
             f.write(content.encode("utf-8"))
 
         return clean_df
 
-    def _append_impl(self, fs: AbstractFileSystem, df: pd.DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> pd.DataFrame:
+    def _append_impl(self, fs: AbstractFileSystem, df: pd.DataFrame, read_path: str, write_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> pd.DataFrame:
         clean_df = t.cast("pd.DataFrame", self._drop_metadata_columns(df, metadata_prefix))
         
         row_delim = options.row_delimiter if (options and options.row_delimiter) else "\n"
@@ -65,14 +65,16 @@ class TextFileHandler(BaseFileHandler):
         else:
             new_text = clean_df.astype(str).apply(lambda row: col_delim.join(row), axis=1).str.cat(sep=row_delim) + row_delim
 
-        file_buffer = io.BytesIO()
-        with fs.open(file_path, "rb") as f:
-            file_buffer.write(f.read())
-        
-        file_buffer.write(new_text.encode("utf-8"))
-        
-        file_buffer.seek(0)
-        with fs.open(file_path, "wb") as f:
-            f.write(file_buffer.read())
+        with io.BytesIO() as file_buffer:
+            try:
+                with fs.open(read_path, "rb") as f:
+                    file_buffer.write(f.read())
+            except (FileNotFoundError, OSError):
+                pass
+            file_buffer.write(new_text.encode("utf-8"))
+
+            file_buffer.seek(0)
+            with fs.open(write_path, "wb") as f:
+                f.write(file_buffer.read())
 
         return clean_df

@@ -54,14 +54,14 @@ class ORCFileHandler(BaseFileHandler):
         self, 
         fs: AbstractFileSystem, 
         df: pd.DataFrame, 
-        file_path: str, 
+        write_path: str, 
         options: t.Optional[FileOptions], 
         metadata_prefix: str
     ) -> pd.DataFrame:
         clean_df = self._drop_metadata_columns(df, metadata_prefix)
 
         table = pa.Table.from_pandas(clean_df, preserve_index=False)
-        with fs.open(file_path, "wb") as f:
+        with fs.open(write_path, "wb") as f:
             orc.write_table(table, f)
 
         return clean_df
@@ -70,29 +70,34 @@ class ORCFileHandler(BaseFileHandler):
         self, 
         fs: AbstractFileSystem, 
         df: pd.DataFrame, 
-        file_path: str, 
+        read_path: str, 
+        write_path: str, 
         options: t.Optional[FileOptions], 
         metadata_prefix: str
     ) -> pd.DataFrame:
         new_df = self._drop_metadata_columns(df, metadata_prefix)
         new_table = pa.Table.from_pandas(new_df, preserve_index=False)
 
-        # Read existing ORC dataset
-        with fs.open(file_path, "rb") as f:
-            existing_table = orc.read_table(f)
+        # Read existing ORC dataset safely
+        try:
+            with fs.open(read_path, "rb") as f:
+                existing_table = orc.read_table(f)
 
-        # Schema Validation
-        existing_names = existing_table.schema.names
-        new_names = new_table.schema.names
-        if existing_names != new_names:
-            raise ValueError(
-                f"Schema mismatch for ORC append in '{file_path}'.\n"
-                f"Expected columns: {existing_names}\n"
-                f"Received columns: {new_names}"
-            )
+            existing_names = existing_table.schema.names
+            new_names = new_table.schema.names
+            if existing_names != new_names:
+                raise ValueError(
+                    f"Schema mismatch for ORC append in '{read_path}'.\n"
+                    f"Expected columns: {existing_names}\n"
+                    f"Received columns: {new_names}"
+                )
 
-        combined_table = pa.concat_tables([existing_table, new_table])
-        with fs.open(file_path, "wb") as f:
+            combined_table = pa.concat_tables([existing_table, new_table])
+        except (FileNotFoundError, OSError):
+            # If target file doesn't exist, append acts as write
+            combined_table = new_table
+
+        with fs.open(write_path, "wb") as f:
             orc.write_table(combined_table, f)
 
         return new_df

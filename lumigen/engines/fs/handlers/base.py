@@ -1,5 +1,7 @@
 from __future__ import annotations
 import typing as t
+import os
+import uuid
 from abc import ABC, abstractmethod
 
 if t.TYPE_CHECKING:
@@ -9,6 +11,17 @@ if t.TYPE_CHECKING:
 
 
 class BaseFileHandler(ABC):
+    @staticmethod
+    def _get_temp_path(file_path: str) -> t.Tuple[str, str]:
+        """
+        Generates a staging path inside the standard '_temporary/' directory.
+        """
+        parent_dir, base_name = os.path.split(file_path)
+        name_part, ext = os.path.splitext(base_name)
+        tmp_dir = f"{parent_dir}/_temporary" if parent_dir else "_temporary"
+        tmp_path = f"{tmp_dir}/{uuid.uuid4().hex}-{name_part}.tmp{ext}"
+        return tmp_dir, tmp_path
+
     @staticmethod
     def _drop_metadata_columns(df: DataFrame, metadata_prefix: str) -> DataFrame:
         """
@@ -49,11 +62,20 @@ class BaseFileHandler(ABC):
         pass
 
     def write(self, fs: AbstractFileSystem, df: DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> None:
-        written_df = self._write_impl(fs, df, file_path, options, metadata_prefix)
-        self._validate_written_df(written_df, "_write_impl", metadata_prefix)
+        tmp_dir, tmp_path = self._get_temp_path(file_path)
+        try:
+            # Write data to the temporary file inside _temporary/
+            written_df = self._write_impl(fs, df, tmp_path, options, metadata_prefix)
+            self._validate_written_df(written_df, "_write_impl", metadata_prefix)
+            # If successful, clear old destination (file or directory)
+            self._force_remove(fs, file_path)
+            # Atomically move the temp file to the final destination
+            fs.rename(tmp_path, file_path)
+        finally:
+            self._cleanup_temp(fs, tmp_path, tmp_dir)
 
     @abstractmethod
-    def _write_impl(self, fs: AbstractFileSystem, df: DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> DataFrame:
+    def _write_impl(self, fs: AbstractFileSystem, df: DataFrame, write_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> DataFrame:
         """
         Writes a DataFrame to a file, overwriting it if it already exists.
         Subclasses must return the DataFrame passed to the writer.
@@ -61,16 +83,62 @@ class BaseFileHandler(ABC):
         pass
 
     def append(self, fs: AbstractFileSystem, df: DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> None:
-        written_df = self._append_impl(fs, df, file_path, options, metadata_prefix)
-        self._validate_written_df(written_df, "_append_impl", metadata_prefix)
+        tmp_dir, tmp_path = self._get_temp_path(file_path)
+        try:
+            written_df = self._append_impl(fs, df, read_path=file_path, write_path=tmp_path, options=options, metadata_prefix=metadata_prefix)
+            self._validate_written_df(written_df, "_append_impl", metadata_prefix)
+            self._force_remove(fs, file_path)
+            fs.rename(tmp_path, file_path)
+        finally:
+            self._cleanup_temp(fs, tmp_path, tmp_dir)
 
     @abstractmethod
-    def _append_impl(self, fs: AbstractFileSystem, df: DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> DataFrame:
+    def _append_impl(self, fs: AbstractFileSystem, df: DataFrame, read_path: str, write_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> DataFrame:
         """
         Appends data to an existing file, validating schema compatibility first.
         Subclasses must return the DataFrame passed to the writer.
         """
         pass
+
+    @staticmethod
+    def _force_remove(fs: AbstractFileSystem, path: str) -> None:
+        """
+        Completely removes a file or directory (including directory markers)
+        """
+        clean_path = path.rstrip("/")
+        try:
+            fs.rm(clean_path, recursive=True)
+        except (FileNotFoundError, OSError):
+            pass
+        try:
+            fs.rm(clean_path)
+        except (FileNotFoundError, OSError):
+            pass
+        try:
+            fs.rm(clean_path + "/")
+        except (FileNotFoundError, OSError):
+            pass
+        if hasattr(fs, "invalidate_cache"):
+            try:
+                fs.invalidate_cache(clean_path)
+                fs.invalidate_cache(os.path.dirname(clean_path))
+            except Exception:
+                pass
+
+    @staticmethod
+    def _cleanup_temp(fs: AbstractFileSystem, tmp_path: str, tmp_dir: str) -> None:
+        """
+        Safely removes orphaned temp files and empty staging directories.
+        """
+        try:
+            fs.rm(tmp_path)
+        except (FileNotFoundError, OSError):
+            pass
+        try:
+            if not fs.ls(tmp_dir):
+                BaseFileHandler._force_remove(fs, tmp_dir)
+        except (FileNotFoundError, OSError):
+            pass
 
 
 class FileHandlerFactory:

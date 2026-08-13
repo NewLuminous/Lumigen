@@ -12,7 +12,7 @@ from engines.spark.spark_session import SparkSessionConnection
 from engines.spark.file_handlers import SparkFileHandlerFactory, BaseSparkFileHandler
 from engines.fs.clients import FileSystemConnection, HDFSConnection, S3Connection
 from engines.fs.request_parser import FileRequest, FileRequestParser, FileOperationType, FileOptions, RequestParseError
-from utils.dataset import columns_to_types_from_df
+from utils.dataset import columns_to_types_from_df, DataFrameConverter
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,7 @@ class SparkFileSystemCursor(SparkStreamToBatchCursor):
         except RequestParseError as e:
             logger.error(f"Failed to execute request due to parsing error.", exc_info=e)
             raise
+
         if parsed_request.operation == FileOperationType.READ:
             target_path = self._fs_cursor._clean_path(parsed_request.file_pattern or parsed_request.file_path)
             files = dict(self._fs_cursor._lazy_glob(
@@ -81,13 +82,20 @@ class SparkFileSystemCursor(SparkStreamToBatchCursor):
             cleaned_path = self._fs_cursor._clean_path(parsed_request.file_path)
             self._append_single_file(df, cleaned_path, parsed_request.options)
         elif parsed_request.operation == FileOperationType.REMOVE:
-            raise NotImplementedError()
+            self._fs_cursor.execute(request, **kwargs)
         elif parsed_request.operation == FileOperationType.LIST:
-            raise NotImplementedError()
+            self._fs_cursor.execute(request)
+            pdf = self._fs_cursor.fetchdf()
+            self._last_df = DataFrameConverter.to_spark(pdf, self._spark)
+            self._last_output = None
+            self._last_output_cursor = 0
         else:
             raise NotImplementedError(f"Operation {parsed_request.operation} for Spark is not implemented.")
 
-    def _read_files(self, files: t.Dict[str, t.Dict[str, t.Any]], request: FileRequest) -> DataFrame:
+    def _dispatch_to_handlers(self, files: t.Dict[str, t.Dict[str, t.Any]], request: FileRequest, operation_name: str) -> t.Optional[DataFrame]:
+        """
+        Helper method to group files by extension, execute the target handler operation, and union the outputs.
+        """
         files_by_ext = defaultdict(dict)
         for path, info in files.items():
             _, ext = os.path.splitext(path.lower())
@@ -96,54 +104,41 @@ class SparkFileSystemCursor(SparkStreamToBatchCursor):
         dfs: t.List[DataFrame] = []
         for ext, group_files in files_by_ext.items():
             handler = SparkFileHandlerFactory.get_handler(ext)
-            if handler:
-                group_df = handler.read(self._spark, group_files, request, self._fs_cursor.METADATA_COLUMN_PREFIX,
-                                        self.fs_type, fs_conn=self._fs_conn)
-                dfs.append(group_df)
-            else:
+            if not handler:
                 raise NotImplementedError(
                     f"No Spark file handler is registered for the extension '{ext}'. "
                     f"Please verify that a compatible handler has been mounted via SparkFileHandlerFactory.register()."
                 )
+            
+            handler_func = getattr(handler, operation_name)
+            group_df = handler_func(
+                self._spark, group_files, request, self._fs_cursor.METADATA_COLUMN_PREFIX,
+                self.fs_type, fs_conn=self._fs_conn
+            )
+            dfs.append(group_df)
 
         if not dfs:
-            prefix = self._fs_cursor.METADATA_COLUMN_PREFIX
-            return BaseSparkFileHandler.create_empty_metadata_df(self._spark, prefix)
+            return None
 
         combined_df = dfs[0]
         for df in dfs[1:]:
             combined_df = combined_df.unionByName(df, allowMissingColumns=True)
         return combined_df
 
-    def _describe_files(self, files: t.Dict[str, t.Dict[str, t.Any]], request: FileRequest) -> DataFrame:
-            files_by_ext = defaultdict(dict)
-            for path, info in files.items():
-                _, ext = os.path.splitext(path.lower())
-                files_by_ext[ext][path] = info
-    
-            dfs: t.List[DataFrame] = []
-            for ext, group_files in files_by_ext.items():
-                handler = SparkFileHandlerFactory.get_handler(ext)
-                if handler:
-                    group_df = handler.describe(self._spark, group_files, request, self._fs_cursor.METADATA_COLUMN_PREFIX,
-                                            self.fs_type, fs_conn=self._fs_conn)
-                    dfs.append(group_df)
-                else:
-                    raise NotImplementedError(
-                        f"No Spark file handler is registered for the extension '{ext}'. "
-                        f"Please verify that a compatible handler has been mounted via SparkFileHandlerFactory.register()."
-                    )
-    
-            schema_str = "field STRING, type STRING"
-            if not dfs:
-                return self._spark.createDataFrame([], schema=schema_str)
-    
-            combined_df = dfs[0]
-            for df in dfs[1:]:
-                combined_df = combined_df.unionByName(df, allowMissingColumns=True)
+    def _read_files(self, files: t.Dict[str, t.Dict[str, t.Any]], request: FileRequest) -> DataFrame:
+        combined_df = self._dispatch_to_handlers(files, request, "read")
+        if combined_df is None:
+            return BaseSparkFileHandler.create_empty_metadata_df(self._spark, self._fs_cursor.METADATA_COLUMN_PREFIX)
+        return combined_df
 
-            describe_rows = [(name, dtype.sql()) for name, dtype in columns_to_types_from_df(combined_df).items()]
-            return self._spark.createDataFrame(describe_rows, schema=schema_str)
+    def _describe_files(self, files: t.Dict[str, t.Dict[str, t.Any]], request: FileRequest) -> DataFrame:
+        schema_str = "field STRING, type STRING"
+        combined_df = self._dispatch_to_handlers(files, request, "describe")
+        if combined_df is None:
+            return self._spark.createDataFrame([], schema=schema_str)
+
+        describe_rows = [(name, dtype.sql()) for name, dtype in columns_to_types_from_df(combined_df).items()]
+        return self._spark.createDataFrame(describe_rows, schema=schema_str)
 
     def _write_single_file(self, df: DataFrame, file_path: str, file_options: t.Optional[FileOptions] = None) -> None:
         _, file_ext = os.path.splitext(file_path.lower())
@@ -212,6 +207,30 @@ class SparkFileSystemConnection(SparkSessionConnection):
             hadoop_conf.set("fs.s3.impl", s3a_impl)
             self.spark.conf.set("spark.hadoop.fs.s3a.impl", s3a_impl)
             self.spark.conf.set("spark.hadoop.fs.s3.impl", s3a_impl)
+
+            endpoint = (self._fs_conn.endpoint_url or "").lower()
+            is_aws_s3 = (not endpoint) or "amazonaws.com" in endpoint
+            if not is_aws_s3:
+                try:
+                    jvm = self.spark.sparkContext._jvm
+                    jvm.org.apache.logging.log4j.core.config.Configurator.setLevel(
+                        "org.apache.hadoop.fs.s3a.commit",
+                        jvm.org.apache.logging.log4j.Level.ERROR
+                    )
+                except Exception:
+                    pass
+
+            committer_factory = "org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory"
+            hadoop_conf.set("fs.s3a.committer.factory.class", committer_factory)
+            self.spark.conf.set("spark.hadoop.fs.s3a.committer.factory.class", committer_factory)
+
+            committer_name = "directory" if is_aws_s3 else "file"
+            hadoop_conf.set("fs.s3a.committer.name", committer_name)
+            self.spark.conf.set("spark.hadoop.fs.s3a.committer.name", committer_name)
+
+            if committer_name == "directory":
+                hadoop_conf.set("fs.s3a.committer.staging.conflict-mode", "replace")
+                self.spark.conf.set("spark.hadoop.fs.s3a.committer.staging.conflict-mode", "replace")
 
             if self._fs_conn.endpoint_url:
                 hadoop_conf.set("fs.s3a.endpoint", self._fs_conn.endpoint_url)
@@ -291,6 +310,9 @@ class SparkFileSystemConnection(SparkSessionConnection):
     def cursor(self) -> SparkFileSystemCursor:
         super().cursor()
         return SparkFileSystemCursor(self.spark, self.fs_type, self._fs_conn)
+
+    def exists(self, file_path: str) -> bool:
+        return self._fs_conn.exists(file_path)
 
 
 def connection(spark: SparkSession, fs_type: str, fs_connection_factory: t.Callable[[], t.Any]) -> SparkFileSystemConnection:

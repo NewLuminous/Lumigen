@@ -5,6 +5,7 @@ import os
 import re
 import pandas as pd
 import datetime
+import uuid
 from glob import has_magic
 from fsspec.utils import glob_translate
 import threading
@@ -124,6 +125,14 @@ class FileSystemCursor:
         def _matches_filter(path: str, info: t.Dict[str, t.Any]) -> bool:
             if info.get("type") != "file":
                 return False
+
+            # Ignore Hadoop/Spark staging/system files
+            if "/_temporary/" in path or path.endswith("/_temporary"):
+                return False
+            basename = os.path.basename(path)
+            if basename in ("_SUCCESS", "_metadata", "_common_metadata") or basename.endswith(".crc"):
+                return False
+            
             if require_supported:
                 ext = os.path.splitext(path)[-1].lower()
                 if FileHandlerFactory.get_handler(ext) is None:
@@ -195,9 +204,9 @@ class FileSystemCursor:
         min_idx = min(idx_star, idx_qmark, idx_brace)
 
         if "/" in target_path[:min_idx]:
-            min_idx = target_path[:min_idx].rindex("/")
-            root = target_path[: min_idx + 1]
-            depth = target_path[min_idx + 1 :].count("/") + 1
+            last_slash = target_path[:min_idx].rindex("/")
+            root = target_path[: last_slash + 1]
+            depth = target_path[last_slash + 1 :].count("/") + 1
         else:
             root = ""
             depth = target_path[min_idx + 1 :].count("/") + 1
@@ -209,14 +218,44 @@ class FileSystemCursor:
             root = "/"
 
         pattern = re.compile(glob_translate(target_path))
+
+        def _traverse_matched_dir(dataset_path: str) -> t.Iterator[t.Tuple[str, t.Dict[str, t.Any]]]:
+            # Skip traversing into uncommitted staging directories
+            if os.path.basename(dataset_path.rstrip("/")) == "_temporary":
+                return
+
+            try:
+                sub_item: t.Dict[str, t.Any]
+                for sub_item in self._fs.ls(dataset_path, detail=True):
+                    sub_path: str = sub_item.get("name", "")
+                    if target_path.startswith("/") and not sub_path.startswith("/"):
+                        sub_path = "/" + sub_path
+                        
+                    if sub_item.get("type") == "file":
+                        if _matches_filter(sub_path, sub_item):
+                            yield (sub_path, sub_item)
+                    elif sub_item.get("type") == "directory":
+                        yield from _traverse_matched_dir(sub_path)
+            except (FileNotFoundError, OSError):
+                pass
+
         try:
             for dirpath, dirs, files in self._fs.walk(root, maxdepth=depth, detail=True):
+                # Check exact file matches
                 for name, info in files.items():
                     full_path: str = info["name"]
                     if target_path.startswith("/") and not full_path.startswith("/"):
                         full_path = "/" + full_path
                     if pattern.match(full_path) and _matches_filter(full_path, info):
                         yield (full_path, info)
+
+                # Check if a directory matches the pattern (i.e. it's a Spark Dataset)
+                for d in dirs:
+                    dir_full_path = f"{dirpath}/{d}".replace("//", "/")
+                    if target_path.startswith("/") and not dir_full_path.startswith("/"):
+                        dir_full_path = "/" + dir_full_path
+                    if pattern.match(dir_full_path):
+                        yield from _traverse_matched_dir(dir_full_path)
         except (FileNotFoundError, OSError):
             return
 
@@ -430,20 +469,44 @@ class FileSystemCursor:
 
     def _append_single_file(self, df: pd.DataFrame, file_path: str, file_options: t.Optional[FileOptions] = None) -> None:
         cleaned_path = self._clean_path(file_path)
+
+        try:
+            target_info = self._fs.info(cleaned_path)
+            is_dir = target_info.get("type") == "directory"
+        except (FileNotFoundError, OSError):
+            is_dir = False
+        if is_dir:
+            _, ext = os.path.splitext(cleaned_path)
+            # If directory name lacks an extension, peek inside to infer the format from existing files.
+            if not ext:
+                for existing_path, _ in self._lazy_glob(cleaned_path, require_supported=True):
+                    _, found_ext = os.path.splitext(existing_path)
+                    if found_ext:
+                        ext = found_ext
+                        break
+            if not ext:
+                raise ValueError(f"Cannot determine file format for appending to directory '{cleaned_path}'.")
+            
+            new_part_name = f"part-00000-{uuid.uuid4()}-c000{ext}"
+            new_part_path = f"{cleaned_path.rstrip('/')}/{new_part_name}"
+            # Write as a brand new single file inside the dataset directory
+            self._write_single_file(df, new_part_path, file_options)
+            return
+
         # Use _lazy_glob() instead of fsspec.exists()
         existing_files = list(self._lazy_glob(cleaned_path, require_supported=False))
         if not existing_files:
-            return self._write_single_file(df, file_path, file_options)
+            return self._write_single_file(df, cleaned_path, file_options)
 
         try:
-            _, file_ext = os.path.splitext(file_path.lower())
+            _, file_ext = os.path.splitext(cleaned_path.lower())
             handler = FileHandlerFactory.get_handler(file_ext)
             if not handler:
-                raise ValueError(f"Unsupported file format for appending: {file_path}")
+                raise ValueError(f"Unsupported file format for appending: {cleaned_path}")
             
-            handler.append(self._fs, df, file_path, file_options, self.METADATA_COLUMN_PREFIX)
+            handler.append(self._fs, df, cleaned_path, file_options, self.METADATA_COLUMN_PREFIX)
         except Exception as e:
-            logger.error(f"Failed to append data to file {file_path}.", exc_info=e)
+            logger.error(f"Failed to append data to file {cleaned_path}.", exc_info=e)
             raise
 
     def fetchdf(self) -> pd.DataFrame:

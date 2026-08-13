@@ -1,18 +1,21 @@
 from __future__ import annotations
 import typing as t
+import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
 import os
 import re
 import pandas as pd
+import uuid
 
 if t.TYPE_CHECKING:
-    from pyspark.sql import DataFrame, SparkSession
-    import pandas as pd
+    from pyspark.sql import DataFrame, SparkSession, DataFrameReader, DataFrameWriter
     from engines.fs.request_parser import FileRequest, FileOptions
-    from engines.fs.clients import FileSystemConnection, HDFSConnection, S3Connection
+    from engines.fs.clients import FileSystemConnection
 
 from utils.dataset import DataFrameConverter
+
+logger = logging.getLogger(__name__)
 
 
 class BaseSparkFileHandler(ABC):
@@ -20,8 +23,13 @@ class BaseSparkFileHandler(ABC):
         "hdfs", "s3",
     }
 
-    def read(self, spark: SparkSession, files: t.Dict[str, t.Dict[str, t.Any]], request: FileRequest, metadata_prefix: str,
-             fs_type: str, fs_conn: t.Optional[FileSystemConnection] = None) -> DataFrame:
+    # Threshold above which Spark's distributed mergeSchema is prefered over driver-side threaded schema inference.
+    DRIVER_SCHEMA_INFERENCE_THRESHOLD = 1000
+
+    def read(
+        self, spark: SparkSession, files: t.Dict[str, t.Dict[str, t.Any]], request: FileRequest, metadata_prefix: str,
+        fs_type: str, fs_conn: t.Optional[FileSystemConnection] = None,
+    ) -> DataFrame:
         if fs_type == "hdfs":
             hdfs_files = {}
             for path, info in files.items():
@@ -31,7 +39,7 @@ class BaseSparkFileHandler(ABC):
                 hdfs_files["hdfs://" + no_scheme_path] = info
             consolidated_paths = self._consolidate_paths(list(hdfs_files.keys()))
 
-            df = self._read_hdfs(spark, hdfs_files, consolidated_paths, request, metadata_prefix, fs_conn)
+            df = self._read_hadoop_fs(spark, hdfs_files, consolidated_paths, request, metadata_prefix, fs_conn)
         elif fs_type == "s3":
             s3_files = {}
             for path, info in files.items():
@@ -39,7 +47,7 @@ class BaseSparkFileHandler(ABC):
                 s3_files["s3a://" + no_scheme_path] = info
             consolidated_paths = self._consolidate_paths(list(s3_files.keys()))
 
-            df = self._read_s3(spark, s3_files, consolidated_paths, request, metadata_prefix, fs_conn)
+            df = self._read_hadoop_fs(spark, s3_files, consolidated_paths, request, metadata_prefix, fs_conn)
         else:
             df = self._read_via_pandas(spark, files, request, metadata_prefix, fs_conn)
 
@@ -68,7 +76,8 @@ class BaseSparkFileHandler(ABC):
                 raise NotImplementedError(
                     f"The reader subclass '{class_name}' returned a DataFrame missing the required metadata column: '{col_name}', "
                     f"and the native '_metadata' column is not present in the schema to extract it from.\n"
-                    f"To resolve this, the subclass's internal read implementations must return a DataFrame populated with the following 4 metadata columns: {expected_list}, "
+                    f"To resolve this, the subclass's internal read implementations must return a DataFrame "
+                    f"populated with the following 4 metadata columns: {expected_list}, "
                     f"or read from a data source that natively exposes the '_metadata' struct."
                 )
 
@@ -86,15 +95,64 @@ class BaseSparkFileHandler(ABC):
             
         return df
 
-    @abstractmethod
-    def _read_hdfs(self, spark: SparkSession, files: t.Dict[str, t.Dict[str, t.Any]], consolidated_paths: t.List[str], request: FileRequest, metadata_prefix: str, fs_conn: t.Optional[HDFSConnection] = None) -> DataFrame:
-        pass
+    def _read_native_format(
+        self, spark: SparkSession, format_name: str,
+        files: t.Dict[str, t.Dict[str, t.Any]], consolidated_paths: t.List[str], request: FileRequest, metadata_prefix: str,
+        fs_conn: t.Optional[FileSystemConnection] = None,
+    ) -> DataFrame:
+        """
+        Shared native Spark read execution engine.
+        """
+        file_count = len(files)
+        if file_count == 0:
+            return self.create_empty_metadata_df(spark, metadata_prefix)
+
+        reader = (
+            spark.read.format(format_name)
+            .option("ignoreCorruptFiles", "true")
+            .option("ignoreMissingFiles", "true")
+        )
+
+        # Driver-Side Schema Inference Heuristic
+        if fs_conn and file_count <= self.DRIVER_SCHEMA_INFERENCE_THRESHOLD:
+            try:
+                unified_schema_df = fs_conn.cursor()._infer_unified_schema(files, request)
+                if unified_schema_df is not None and len(unified_schema_df.columns) > 0:
+                    spark_schema_df = DataFrameConverter.to_spark(unified_schema_df, spark)
+                    expected_schema = self._drop_metadata_columns(spark_schema_df, metadata_prefix).schema
+                    reader = reader.schema(expected_schema)
+                else:
+                    reader = reader.option("mergeSchema", "true")
+            except Exception as e:
+                logger.warning("Driver-side schema inference failed; falling back to mergeSchema.", exc_info=e)
+                reader = reader.option("mergeSchema", "true")
+        # Native Distributed Schema Merging
+        else:
+            reader = reader.option("mergeSchema", "true")
+
+        reader = self._configure_reader(reader, request.options)
+        return reader.load(consolidated_paths)
+
+    def _configure_reader(self, reader: DataFrameReader, options: t.Optional[FileOptions]) -> DataFrameReader:
+        """
+        Hook for subclasses to configure the PySpark DataFrameReader builder by chaining any options, schemas, or custom configurations.
+        """
+        return reader
 
     @abstractmethod
-    def _read_s3(self, spark: SparkSession, files: t.Dict[str, t.Dict[str, t.Any]], consolidated_paths: t.List[str], request: FileRequest, metadata_prefix: str, fs_conn: t.Optional[S3Connection] = None) -> DataFrame:
+    def _read_hadoop_fs(
+        self, spark: SparkSession, files: t.Dict[str, t.Dict[str, t.Any]], consolidated_paths: t.List[str], request: FileRequest, metadata_prefix: str,
+        fs_conn: t.Optional[FileSystemConnection] = None
+    ) -> DataFrame:
+        """
+        Handles reading from storage backends backed by Hadoop's FileSystem Java API.
+        """
         pass
 
-    def _read_via_pandas(self, spark: SparkSession, files: t.Dict[str, t.Dict[str, t.Any]], request: FileRequest, metadata_prefix: str, fs_conn: t.Optional[FileSystemConnection]) -> DataFrame:
+    def _read_via_pandas(
+        self, spark: SparkSession, files: t.Dict[str, t.Dict[str, t.Any]], request: FileRequest, metadata_prefix: str,
+        fs_conn: t.Optional[FileSystemConnection],
+    ) -> DataFrame:
         """
         Streams chunks on the Driver.
         """
@@ -142,8 +200,10 @@ class BaseSparkFileHandler(ABC):
 
         return accumulated_df
 
-    def describe(self, spark: SparkSession, files: t.Dict[str, t.Dict[str, t.Any]], request: FileRequest, metadata_prefix: str,
-                 fs_type: str, fs_conn: t.Optional[FileSystemConnection] = None) -> DataFrame:
+    def describe(
+        self, spark: SparkSession, files: t.Dict[str, t.Dict[str, t.Any]], request: FileRequest, metadata_prefix: str,
+        fs_type: str, fs_conn: t.Optional[FileSystemConnection] = None,
+    ) -> DataFrame:
         if not fs_conn:
             lazy_spark_df = self.read(spark, files, request, metadata_prefix, fs_type, fs_conn)
             return lazy_spark_df
@@ -155,7 +215,7 @@ class BaseSparkFileHandler(ABC):
                 return self.create_empty_metadata_df(spark, metadata_prefix)
 
     @staticmethod
-    def drop_metadata_columns(df: DataFrame, metadata_prefix: str) -> DataFrame:
+    def _drop_metadata_columns(df: DataFrame, metadata_prefix: str) -> DataFrame:
         """
         Helper for subclasses to drop metadata columns prior to writing.
         """
@@ -179,8 +239,10 @@ class BaseSparkFileHandler(ABC):
                 f"Ensure '_drop_metadata_columns()' is called to sanitize the DataFrame before execution."
             )
 
-    def write(self, spark: SparkSession, df: DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str,
-              fs_type: str, fs_conn: t.Optional[FileSystemConnection] = None) -> None:
+    def write(
+        self, spark: SparkSession, df: DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str,
+        fs_type: str, fs_conn: t.Optional[FileSystemConnection] = None,
+    ) -> None:
         """
         Writes a DataFrame to a file, overwriting it if it already exists.
         """
@@ -190,48 +252,111 @@ class BaseSparkFileHandler(ABC):
             if not no_scheme_path.startswith("/"):
                 no_scheme_path = "/" + no_scheme_path
 
-            method_name = "_write_hdfs"
-            written_df = self._write_hdfs(spark, df, "hdfs://" + no_scheme_path, options, metadata_prefix, fs_conn)
+            method_name = "_write_hadoop_fs"
+            written_df = self._write_hadoop_fs(spark, df, "hdfs://" + no_scheme_path, options, metadata_prefix, fs_conn)
         elif fs_type == "s3":
             no_scheme_path = self.strip_scheme(file_path).lstrip("/")
-            method_name = "_write_s3"
-            written_df = self._write_s3(spark, df, "s3a://" + no_scheme_path, options, metadata_prefix, fs_conn)
+            method_name = "_write_hadoop_fs"
+            written_df = self._write_hadoop_fs(spark, df, "s3a://" + no_scheme_path, options, metadata_prefix, fs_conn)
         else:
             method_name = "_write_via_pandas"
-            written_df = self._write_via_pandas(spark, df, file_path, options, metadata_prefix, fs_conn)
+            written_df = self._write_via_pandas(df, file_path, options, metadata_prefix, fs_conn)
 
         self._validate_written_df(written_df, method_name, metadata_prefix)
 
+    def _write_native_format(
+        self, spark: SparkSession, format_name: str, df: DataFrame,
+        file_path: str, mode: str, options: t.Optional[FileOptions], metadata_prefix: str,
+        fs_conn: t.Optional[FileSystemConnection] = None,
+    ) -> DataFrame:
+        """
+        Shared native Spark write/append execution engine.
+        Converts single files to dataset directories automatically when mode='append'.
+        """
+        if mode == "append":
+            self._promote_file_to_dataset_dir(file_path, fs_conn)
+
+        clean_df = self._drop_metadata_columns(df, metadata_prefix)
+
+        writer = clean_df.write.format(format_name).mode(mode)
+        writer = self._configure_writer(writer, options)
+        writer.save(file_path)
+        return clean_df
+
+    def _configure_writer(self, writer: DataFrameWriter, options: t.Optional[FileOptions]) -> DataFrameWriter:
+        """
+        Hook for subclasses to configure the PySpark DataFrameWriter builder by chaining any options.
+        """
+        return writer
+
     @abstractmethod
-    def _write_hdfs(self, spark: SparkSession, df: DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str, fs_conn: t.Optional[HDFSConnection] = None) -> DataFrame:
+    def _write_hadoop_fs(
+        self, spark: SparkSession, df: DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str,
+        fs_conn: t.Optional[FileSystemConnection] = None,
+    ) -> DataFrame:
         """
         Writes a DataFrame to a file, overwriting it if it already exists.
         Subclasses must return the DataFrame passed to the writer.
         """
         pass
 
-    @abstractmethod
-    def _write_s3(self, spark: SparkSession, df: DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str, fs_conn: t.Optional[S3Connection] = None) -> DataFrame:
-        """
-        Writes a DataFrame to a file, overwriting it if it already exists.
-        Subclasses must return the DataFrame passed to the writer.
-        """
-        pass
-
-    def _write_via_pandas(self, df: DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str, fs_conn: t.Optional[FileSystemConnection] = None) -> DataFrame:
+    def _write_via_pandas(
+        self, df: DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str,
+        fs_conn: t.Optional[FileSystemConnection] = None,
+    ) -> DataFrame:
         if not fs_conn:
             raise ValueError("FileSystemConnection (fs_conn) is required for writing files via Pandas.")
 
         pdf = DataFrameConverter.to_pandas(df)
         fs_conn.cursor()._write_single_file(pdf, file_path, options)
-        return self.drop_metadata_columns(df, metadata_prefix)
+        return self._drop_metadata_columns(df, metadata_prefix)
 
-    def append(self, spark: SparkSession, df: DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str,
-               fs_type: str, fs_conn: t.Optional[FileSystemConnection] = None) -> None:
+    def append(
+        self, spark: SparkSession, df: DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str,
+        fs_type: str, fs_conn: t.Optional[FileSystemConnection] = None,
+    ) -> None:
         """
-        Appends data to an existing file, validating schema compatibility first.
+        Appends data to an existing file/dataset, validating schema compatibility first.
         """
-        raise NotImplementedError()
+        method_name = "_append_impl"
+        if fs_type == "hdfs":
+            no_scheme_path = self.strip_scheme(file_path)
+            if not no_scheme_path.startswith("/"):
+                no_scheme_path = "/" + no_scheme_path
+
+            method_name = "_append_hadoop_fs"
+            written_df = self._append_hadoop_fs(spark, df, "hdfs://" + no_scheme_path, options, metadata_prefix, fs_conn)
+        elif fs_type == "s3":
+            no_scheme_path = self.strip_scheme(file_path).lstrip("/")
+            method_name = "_append_hadoop_fs"
+            written_df = self._append_hadoop_fs(spark, df, "s3a://" + no_scheme_path, options, metadata_prefix, fs_conn)
+        else:
+            method_name = "_append_via_pandas"
+            written_df = self._append_via_pandas(df, file_path, options, metadata_prefix, fs_conn)
+
+        self._validate_written_df(written_df, method_name, metadata_prefix)
+
+    @abstractmethod
+    def _append_hadoop_fs(
+        self, spark: SparkSession, df: DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str,
+        fs_conn: t.Optional[FileSystemConnection] = None,
+    ) -> DataFrame:
+        """
+        Appends a DataFrame to a distributed storage dataset natively.
+        Subclasses must return the DataFrame passed to the writer.
+        """
+        pass
+
+    def _append_via_pandas(
+        self, df: DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str,
+        fs_conn: t.Optional[FileSystemConnection] = None,
+    ) -> DataFrame:
+        if not fs_conn:
+            raise ValueError("FileSystemConnection (fs_conn) is required for appending files via Pandas.")
+
+        pdf = DataFrameConverter.to_pandas(df)
+        fs_conn.cursor()._append_single_file(pdf, file_path, options)
+        return self._drop_metadata_columns(df, metadata_prefix)
 
     @staticmethod
     def strip_scheme(path: str) -> str:
@@ -279,6 +404,44 @@ class BaseSparkFileHandler(ABC):
                         compacted_patterns.append(os.path.join(parent, brace_expr))
 
         return compacted_patterns
+
+    def _promote_file_to_dataset_dir(self, file_path: str, fs_conn: t.Optional[FileSystemConnection]) -> None:
+        """
+        If file_path exists as a single binary file,
+        converts it into a dataset directory containing the single file 
+        formatted as an exact Spark part-file (part-00000-[uuid]-c000.ext).
+        This prevents Spark's FileOutputCommitter from wiping out the single file during mode('append').
+        """
+        if not fs_conn:
+            return
+
+        fs = fs_conn.get_fs()
+        cleaned_path = fs_conn.cursor()._clean_path(file_path)
+        try:
+            info = fs.info(cleaned_path)
+            if info.get("type") == "file":
+                parent_dir, base_name = os.path.split(cleaned_path)
+                _, ext = os.path.splitext(base_name)
+                
+                spark_part_name = f"part-00000-{uuid.uuid4()}-c000{ext}"
+                
+                # Stage in a temporary directory to avoid ENOTDIR (Not a directory) path collisions
+                temp_dir = f"{parent_dir}/_legacy_tmp_{uuid.uuid4().hex[:8]}" if parent_dir else f"_legacy_tmp_{uuid.uuid4().hex[:8]}"
+                temp_file_path = f"{temp_dir}/{spark_part_name}"
+                
+                # Move single file to temporary directory
+                fs.rename(cleaned_path, temp_file_path)
+                
+                # Re-create target path as a directory and move the file inside
+                target_part_path = f"{cleaned_path}/{spark_part_name}"
+                fs.rename(temp_file_path, target_part_path)
+                
+                try:
+                    fs.rm(temp_dir, recursive=True)
+                except Exception:
+                    pass
+        except (FileNotFoundError, OSError):
+            pass
 
     @staticmethod
     def create_empty_metadata_df(spark: SparkSession, metadata_prefix: str) -> DataFrame:

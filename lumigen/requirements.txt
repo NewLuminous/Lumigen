@@ -3,6 +3,7 @@ confluent-kafka==2.6.1
 Faker>=33.3.0
 findspark>=2.0.1
 odfpy>=1.4.1
+openpyxl>=3.1.5
 oracledb>=2.5.0
 polars>=1.31.0
 psycopg2-binary>=2.9.10

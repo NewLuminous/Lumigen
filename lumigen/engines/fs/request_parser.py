@@ -27,6 +27,7 @@ class FileOperationType(Enum):
 class FileOptions(BaseModel):
     row_delimiter: str = Field(default="\n")
     field_delimiter: str = Field(default=",")
+    compression_codec: t.Optional[str] = None
 
 class FileRequest(BaseModel):
     """

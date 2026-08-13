@@ -4,7 +4,7 @@ from functools import partial
 
 if t.TYPE_CHECKING:
     from sqlmesh.core.engine_adapter.base import EngineAdapter
-    from core.config.connection import ConnectionConfig, SparkConnectionConfig
+    from core.config.connection import SparkConnectionConfig, FileSystemConnectionConfig
 
 from core.engine_adapter.spark.configurator import SparkAdapterConfigurator
 from core.engine_adapter import SparkFileSystemEngineAdapter
@@ -15,12 +15,12 @@ class SparkFileSystemConfigurator(SparkAdapterConfigurator):
     def configure(
         self,
         spark_config: SparkConnectionConfig,
-        external_db_config: ConnectionConfig,
+        external_db_config: FileSystemConnectionConfig,
     ) -> t.Optional[EngineAdapter]:
         if external_db_config.type_ not in SparkFileSystemCursor.SUPPORTED_FILE_SYSTEMS:
             return None
 
-        fs_connection_factory = external_db_config._connection_factory_with_kwargs()
+        fs_connection_factory = external_db_config._connection_factory_with_kwargs
         spark_conn_with_kwargs = partial(
             connection,
             **{
@@ -30,4 +30,7 @@ class SparkFileSystemConfigurator(SparkAdapterConfigurator):
                 **{k: v for k, v in spark_config.dict().items() if k in spark_config._connection_kwargs_keys},
             },
         )
-        return SparkFileSystemEngineAdapter(spark_conn_with_kwargs)
+        return SparkFileSystemEngineAdapter(
+            spark_conn_with_kwargs,
+            external_db_config.file_options.model_dump() if external_db_config.file_options else {},
+        )

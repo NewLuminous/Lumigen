@@ -74,9 +74,9 @@ class ExcelFileHandler(BaseFileHandler):
                 sheet_df[metadata_prefix + "excel_sheet_name"] = sheet_name
             return pd.concat(sheets_dict.values(), ignore_index=True)
 
-    def _write_impl(self, fs: AbstractFileSystem, df: pd.DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> pd.DataFrame:
+    def _write_impl(self, fs: AbstractFileSystem, df: pd.DataFrame, write_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> pd.DataFrame:
         clean_df = self._drop_metadata_columns(df, metadata_prefix)
-        _, file_ext = os.path.splitext(file_path.lower())
+        _, file_ext = os.path.splitext(write_path.lower())
         
         if file_ext in (".xlsx", ".xlsm", ".xltx", ".xltm"):
             try:
@@ -91,7 +91,7 @@ class ExcelFileHandler(BaseFileHandler):
         else:
             engine = "auto"
         
-        with fs.open(file_path, "wb") as f:
+        with fs.open(write_path, "wb") as f:
             sheet_name_col = metadata_prefix + "excel_sheet_name"
             with pd.ExcelWriter(f, engine=engine) as writer:
                 if sheet_name_col in df.columns:
@@ -104,15 +104,18 @@ class ExcelFileHandler(BaseFileHandler):
 
         return clean_df
 
-    def _append_impl(self, fs: AbstractFileSystem, df: pd.DataFrame, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> pd.DataFrame:
+    def _append_impl(self, fs: AbstractFileSystem, df: pd.DataFrame, read_path: str, write_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> pd.DataFrame:
         clean_df = self._drop_metadata_columns(df, metadata_prefix)
-        _, file_ext = os.path.splitext(file_path.lower())
+        _, file_ext = os.path.splitext(read_path.lower())
         
-        file_buffer = io.BytesIO()
-        with fs.open(file_path, "rb") as f:
-            file_buffer.write(f.read())
+        with io.BytesIO() as file_buffer:
+            has_existing = True
+            try:
+                with fs.open(read_path, "rb") as f:
+                    file_buffer.write(f.read())
+            except (FileNotFoundError, OSError):
+                has_existing = False
 
-        try:
             if file_ext in (".xlsx", ".xlsm", ".xltx", ".xltm"):
                 engine = "openpyxl"
                 can_overlay = True
@@ -131,73 +134,77 @@ class ExcelFileHandler(BaseFileHandler):
             else:
                 sheets_to_append["Sheet1"] = clean_df
 
-            file_buffer.seek(0)
-            excel_file = pd.ExcelFile(file_buffer, engine=engine)
-            existing_sheet_names = excel_file.sheet_names
-            
-            # VALIDATE SCHEMA
-            for sheet_name, new_df in sheets_to_append.items():
-                if sheet_name in existing_sheet_names:
-                    existing_schema_df = pd.read_excel(excel_file, sheet_name=sheet_name, nrows=0)
-                    existing_cols = list(existing_schema_df.columns)
-                    new_cols = list(new_df.columns)
-                    if existing_cols != new_cols:
-                        raise ValueError(
-                            f"Schema mismatch for sheet '{sheet_name}'.\n"
-                            f"Expected: {existing_cols}\n"
-                            f"Got:      {new_cols}"
-                        )
-                    
-            if can_overlay:
-                import openpyxl
-
-                # Find the maximum row for each target sheet so we know where to append
-                start_rows = {}
+            if has_existing:
                 file_buffer.seek(0)
-                wb = openpyxl.load_workbook(file_buffer, read_only=True)
-                for sheet_name in sheets_to_append.keys():
-                    if sheet_name in existing_sheet_names:
-                        # max_row gives the 1-based index of the last row.
-                        # Setting startrow=max_row in Pandas 0-indexes to the exact next empty row!
-                        start_rows[sheet_name] = wb[sheet_name].max_row
-                    else:
-                        start_rows[sheet_name] = 0
-                wb.close()
-
-                file_buffer.seek(0)
-                # mode='a' with if_sheet_exists='overlay' modifies the workbook in place
-                with pd.ExcelWriter(file_buffer, engine=engine, mode="a", if_sheet_exists="overlay") as writer:
-                    for sheet_name, new_df in sheets_to_append.items():
-                        start_row = start_rows[sheet_name]
-                        if start_row > 0:
-                            # Append to existing sheet: NO header, start exactly below the last row
-                            new_df.to_excel(writer, sheet_name=sheet_name, startrow=start_row, index=False, header=False)
-                        else:
-                            # Brand new sheet: write normally with header
-                            new_df.to_excel(writer, sheet_name=sheet_name, index=False, header=True)
-            else:
-                final_sheets: t.Dict[str, pd.DataFrame] = {}
-                for sheet_name in existing_sheet_names:
-                    if sheet_name in sheets_to_append:
-                        existing_df = pd.read_excel(excel_file, sheet_name=sheet_name)
-                        final_sheets[sheet_name] = pd.concat([existing_df, sheets_to_append.pop(sheet_name)], ignore_index=True)
-                    else:
-                        final_sheets[sheet_name] = pd.read_excel(excel_file, sheet_name=sheet_name)
+                excel_file = pd.ExcelFile(file_buffer, engine=engine)
+                existing_sheet_names = excel_file.sheet_names
                 
-                # Include remaining brand new sheets
+                # VALIDATE SCHEMA
                 for sheet_name, new_df in sheets_to_append.items():
-                    final_sheets[sheet_name] = new_df
+                    if sheet_name in existing_sheet_names:
+                        existing_schema_df = pd.read_excel(excel_file, sheet_name=sheet_name, nrows=0)
+                        existing_cols = list(existing_schema_df.columns)
+                        new_cols = list(new_df.columns)
+                        if existing_cols != new_cols:
+                            raise ValueError(
+                                f"Schema mismatch for sheet '{sheet_name}'.\n"
+                                f"Expected: {existing_cols}\n"
+                                f"Got:      {new_cols}"
+                            )
+                        
+                if can_overlay:
+                    import openpyxl
 
-                file_buffer = io.BytesIO() # Reset buffer
+                    # Find the maximum row for each target sheet so we know where to append
+                    start_rows = {}
+                    file_buffer.seek(0)
+                    wb = openpyxl.load_workbook(file_buffer, read_only=True)
+                    for sheet_name in sheets_to_append.keys():
+                        if sheet_name in existing_sheet_names:
+                            # max_row gives the 1-based index of the last row.
+                            # Setting startrow=max_row in Pandas 0-indexes to the exact next empty row!
+                            start_rows[sheet_name] = wb[sheet_name].max_row
+                        else:
+                            start_rows[sheet_name] = 0
+                    wb.close()
+
+                    file_buffer.seek(0)
+                    # mode='a' with if_sheet_exists='overlay' modifies the workbook in place
+                    with pd.ExcelWriter(file_buffer, engine=engine, mode="a", if_sheet_exists="overlay") as writer:
+                        for sheet_name, new_df in sheets_to_append.items():
+                            start_row = start_rows[sheet_name]
+                            if start_row > 0:
+                                # Append to existing sheet: NO header, start exactly below the last row
+                                new_df.to_excel(writer, sheet_name=sheet_name, startrow=start_row, index=False, header=False)
+                            else:
+                                # Brand new sheet: write normally with header
+                                new_df.to_excel(writer, sheet_name=sheet_name, index=False, header=True)
+                else:
+                    final_sheets: t.Dict[str, pd.DataFrame] = {}
+                    for sheet_name in existing_sheet_names:
+                        if sheet_name in sheets_to_append:
+                            existing_df = pd.read_excel(excel_file, sheet_name=sheet_name)
+                            final_sheets[sheet_name] = pd.concat([existing_df, sheets_to_append.pop(sheet_name)], ignore_index=True)
+                        else:
+                            final_sheets[sheet_name] = pd.read_excel(excel_file, sheet_name=sheet_name)
+                    
+                    # Include remaining brand new sheets
+                    for sheet_name, new_df in sheets_to_append.items():
+                        final_sheets[sheet_name] = new_df
+
+                    file_buffer = io.BytesIO() # Reset buffer
+                    with pd.ExcelWriter(file_buffer, engine=engine) as writer:
+                        for sheet_name, sheet_df in final_sheets.items():
+                            sheet_df.to_excel(writer, sheet_name=sheet_name, index=False)
+            else:
+                file_buffer = io.BytesIO()
                 with pd.ExcelWriter(file_buffer, engine=engine) as writer:
-                    for sheet_name, sheet_df in final_sheets.items():
+                    for sheet_name, sheet_df in sheets_to_append.items():
                         sheet_df.to_excel(writer, sheet_name=sheet_name, index=False)
 
             # Write the completed buffer back to the file system, replacing the old immutable object
             file_buffer.seek(0)
-            with fs.open(file_path, "wb") as f:
+            with fs.open(write_path, "wb") as f:
                 f.write(file_buffer.read())
-        finally:
-            file_buffer.close()
 
         return clean_df
