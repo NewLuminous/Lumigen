@@ -86,21 +86,49 @@ class DataFrameConverter:
         return pdf
 
     @staticmethod
+    def _get_spark_schema_from_pandas(df: pd.DataFrame) -> pyspark_types.StructType:
+        """
+        Infers a strict PySpark StructType schema from a Pandas DataFrame.
+        """
+        try:
+            arrow_schema = pa.Schema.from_pandas(df)
+        except Exception:
+            # If PyArrow fails on mixed object columns (e.g. bytes + int), coerce those columns to str
+            object_cols = t.cast("pd.DataFrame", df.select_dtypes(include=["object", "string"])).columns
+            for col_name in object_cols:
+                try:
+                    pa.Array.from_pandas(df[col_name])
+                except Exception:
+                    # Coerce problematic mixed-type object column to string
+                    df[col_name] = df[col_name].astype(str)
+            arrow_schema = pa.Schema.from_pandas(df)
+
+        schema = from_arrow_schema(arrow_schema)
+        
+        # Spark does not accept NullType for columns containing actual data (or empty rows).
+        # Convert any completely null column to StringType as a safe default.
+        fields = [
+            pyspark_types.StructField(field.name, pyspark_types.StringType(), field.nullable)
+            if isinstance(field.dataType, pyspark_types.NullType)
+            else field
+            for field in schema.fields
+        ]
+        return pyspark_types.StructType(fields)
+
+    @staticmethod
     def to_spark(df: DataFrameType, spark: pyspark.sql.SparkSession) -> pyspark.sql.DataFrame:            
         if isinstance(df, pd.DataFrame):
-            if df.empty:
-                arrow_schema = pa.Schema.from_pandas(df)
-                schema = from_arrow_schema(arrow_schema)
-                fields = []
-                for field in schema.fields:
-                    if isinstance(field.dataType, pyspark_types.NullType):
-                        fields.append(pyspark_types.StructField(field.name, pyspark_types.StringType(), field.nullable))
-                    else:
-                        fields.append(field)
-                schema = pyspark_types.StructType(fields)
-                return spark.createDataFrame([], schema=schema)
+            df_clean: pd.DataFrame = df.copy()
+            if not df_clean.empty:
+                object_cols = t.cast("pd.DataFrame", df_clean.select_dtypes(include=["object", "string"])).columns
+                if not object_cols.empty:
+                    df_clean[object_cols] = t.cast("pd.DataFrame", df_clean[object_cols]).replace({np.nan: None})
+
+            spark_schema = DataFrameConverter._get_spark_schema_from_pandas(df_clean)
+            if df_clean.empty:
+                return spark.createDataFrame([], schema=spark_schema)
             else:
-                return spark.createDataFrame(df)
+                return spark.createDataFrame(df_clean, schema=spark_schema)
             
         return df
 

@@ -85,13 +85,13 @@ class BaseSparkFileHandler(ABC):
         path_col = metadata_prefix + "file_path"
         time_col = metadata_prefix + "file_modification_time"
         target_cols = {path_col, time_col}
-        passthrough_cols = [c for c in df.columns if c not in target_cols]
+        passthrough_exprs = [f"`{c.replace('`', '``')}`" for c in df.columns if c not in target_cols]
         clean_path_expr = f"""CASE 
-            WHEN {path_col} LIKE 'hdfs://%' THEN regexp_replace({path_col}, '^hdfs://(?:[^/]+)?', '') 
-            ELSE regexp_replace({path_col}, '^[a-zA-Z][a-zA-Z0-9+.-]*://', '') 
-        END AS {path_col}"""
-        utc_time_expr = f"to_utc_timestamp({time_col}, current_timezone()) AS {time_col}"
-        df = df.selectExpr(*passthrough_cols, clean_path_expr, utc_time_expr)
+            WHEN `{path_col}` LIKE 'hdfs://%' THEN regexp_replace(`{path_col}`, '^hdfs://(?:[^/]+)?', '') 
+            ELSE regexp_replace(`{path_col}`, '^[a-zA-Z][a-zA-Z0-9+.-]*://', '') 
+        END AS `{path_col}`"""
+        utc_time_expr = f"to_utc_timestamp(`{time_col}`, current_timezone()) AS `{time_col}`"
+        df = df.selectExpr(*passthrough_exprs, clean_path_expr, utc_time_expr)
             
         return df
 
