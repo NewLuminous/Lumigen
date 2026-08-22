@@ -48,6 +48,7 @@ class IcebergEngineAdapter(
     SUPPORTS_CREATE_DROP_CATALOG = False
     SUPPORTED_DROP_CASCADE_OBJECT_KINDS = []
     SUPPORTS_REPLACE_TABLE = True
+    SUPPORTS_QUERY_EXECUTION_TRACKING = True
     DEFAULT_CATALOG_TYPE = "rest"
     
     def table_exists(self, table_name: TableName) -> bool:

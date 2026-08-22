@@ -29,6 +29,7 @@ from engines.iceberg.catalog import load_catalog
 from engines.iceberg.parser import IcebergSQLParser
 from utils.decorators import TimeoutProxy
 from utils.sql import TablePushdownExtractor
+from utils.collections import SQLIdentifierSet
 
 logger = logging.getLogger(__name__)
 
@@ -229,18 +230,24 @@ class IcebergCursor:
                         f"Fail Fast: INSERT has {len(pa_df.column_names)} columns, but table '{table_name}' has {len(iceberg_schema.fields)} columns."
                     )
             else:
-                iceberg_fields = {f.name for f in iceberg_schema.fields}
-                required_fields = {f.name for f in iceberg_schema.fields if f.required}
-                df_fields = set(pa_df.column_names)
+                iceberg_fields_set = SQLIdentifierSet(f.name for f in iceberg_schema.fields)
+                required_fields_set = SQLIdentifierSet(f.name for f in iceberg_schema.fields if f.required)
+                df_fields_set = SQLIdentifierSet(pa_df.column_names)
 
-                missing_required = required_fields - df_fields
+                missing_required = set()
+                for req_field in required_fields_set:
+                    if req_field not in df_fields_set:
+                        missing_required.add(req_field)
                 if missing_required:
                     raise ValueError(
                         f"Fail Fast: Cannot INSERT into '{table_name}'. "
                         f"DataFrame is missing required columns: {missing_required}"
                     )
 
-                extra_fields = df_fields - iceberg_fields
+                extra_fields = set()
+                for col in pa_df.column_names:
+                    if col not in iceberg_fields_set:
+                        extra_fields.add(col)
                 if extra_fields:
                     raise ValueError(
                         f"Fail Fast: Cannot INSERT into '{table_name}'. "
@@ -258,11 +265,20 @@ class IcebergCursor:
             renamed_pa_df = pa_df.rename_columns(target_column_names)
             return renamed_pa_df.cast(arrow_schema)
         else:
-            df_columns = set(pa_df.column_names)
-            aligned_pa_df = pa_df
+            iceberg_fields_set = SQLIdentifierSet(target_column_names)
+            normalized_cols = []
+            for col in pa_df.column_names:
+                matched_col = iceberg_fields_set.get(col)
+                if matched_col is not None:
+                    normalized_cols.append(matched_col)
+                else:
+                    normalized_cols.append(col)
+
+            aligned_pa_df = pa_df.rename_columns(normalized_cols) if normalized_cols != pa_df.column_names else pa_df
+            df_columns_set = SQLIdentifierSet(aligned_pa_df.column_names)
             for field in arrow_schema:
                 # If an optional column is missing from the dataframe, append it as nulls
-                if field.name not in df_columns:
+                if field.name not in df_columns_set:
                     null_array = pa.nulls(aligned_pa_df.num_rows, type=field.type)
                     aligned_pa_df = aligned_pa_df.append_column(field.name, null_array)
         

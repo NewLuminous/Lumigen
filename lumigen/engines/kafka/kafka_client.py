@@ -411,7 +411,7 @@ class KafkaClientCursor:
         return batch
     
     def fetchone(self) -> t.Optional[t.Tuple]:
-        return self.fetchmany(size=1, at_least_one=True)
+        return self.fetchmany(size=1, at_least_one=True)[0]
 
     def fetchall(self) -> t.List[t.Tuple]:
         return self.fetchmany(size=float('inf'), at_least_one=False)
