@@ -2,8 +2,9 @@ from __future__ import annotations
 import typing as t
 
 from collections import defaultdict, OrderedDict
-from functools import singledispatch
+from functools import singledispatch, lru_cache
 import datetime
+import decimal
 import numpy as np
 import pandas as pd
 import pyarrow as pa
@@ -143,7 +144,7 @@ class DataFrameConverter:
                 # Enable PyArrow to eliminate Py4J JVM-to-Python serialization overhead
                 spark.conf.set("spark.sql.execution.arrow.pyspark.enabled", "true")
                 df = df.toPandas()
-            except:
+            except Exception:
                 spark.conf.set("spark.sql.execution.arrow.pyspark.enabled", "false")
                 df = df.toPandas()
             finally:
@@ -193,14 +194,24 @@ class DataFrameConverter:
         return df
 
 
-_TYPE_MAPPINGS = {
+_TYPE_MAPPINGS: t.Dict[t.Any, exp.DataType] = {
+    # Python Native Types
     str: exp.DataType.build(exp.DataType.Type.TEXT),
     bytes: exp.DataType.build(exp.DataType.Type.BINARY),
     bytearray: exp.DataType.build(exp.DataType.Type.BINARY),
     datetime.date: exp.DataType.build(exp.DataType.Type.DATE),
     datetime.datetime: exp.DataType.build(exp.DataType.Type.TIMESTAMP),
+    datetime.time: exp.DataType.build(exp.DataType.Type.TIME),
+    datetime.timedelta: exp.DataType.build(exp.DataType.Type.INTERVAL),
+    decimal.Decimal: exp.DataType.build(exp.DataType.Type.DECIMAL),
+    int: exp.DataType.build(exp.DataType.Type.BIGINT),
+    float: exp.DataType.build(exp.DataType.Type.DOUBLE),
+    bool: exp.DataType.build(exp.DataType.Type.BOOLEAN),
     list: exp.DataType.build(exp.DataType.Type.ARRAY),
     dict: exp.DataType.build(exp.DataType.Type.MAP),
+    type(None): exp.DataType.build(exp.DataType.Type.NULL),
+
+    # NumPy DType Classes
     np.dtypes.Int8DType: exp.DataType.build(exp.DataType.Type.TINYINT),
     np.dtypes.Int16DType: exp.DataType.build(exp.DataType.Type.SMALLINT),
     np.dtypes.Int32DType: exp.DataType.build(exp.DataType.Type.INT),
@@ -231,24 +242,65 @@ _TYPE_MAPPINGS = {
     np.dtypes.CLongDoubleDType: exp.DataType.build(exp.DataType.Type.USERDEFINED),
     np.dtypes.VoidDType: exp.DataType.build(exp.DataType.Type.NULL),
     np.ndarray: exp.DataType.build(exp.DataType.Type.ARRAY),
+
+    # NumPy DType Instances
+    np.dtype("int8"): exp.DataType.build(exp.DataType.Type.TINYINT),
+    np.dtype("int16"): exp.DataType.build(exp.DataType.Type.SMALLINT),
+    np.dtype("int32"): exp.DataType.build(exp.DataType.Type.INT),
+    np.dtype("int64"): exp.DataType.build(exp.DataType.Type.BIGINT),
+    np.dtype("uint8"): exp.DataType.build(exp.DataType.Type.UTINYINT),
+    np.dtype("uint16"): exp.DataType.build(exp.DataType.Type.USMALLINT),
+    np.dtype("uint32"): exp.DataType.build(exp.DataType.Type.UINT),
+    np.dtype("uint64"): exp.DataType.build(exp.DataType.Type.UBIGINT),
+    np.dtype("float16"): exp.DataType.build(exp.DataType.Type.FLOAT),
+    np.dtype("float32"): exp.DataType.build(exp.DataType.Type.FLOAT),
+    np.dtype("float64"): exp.DataType.build(exp.DataType.Type.DOUBLE),
+    np.dtype("O"): exp.DataType.build(exp.DataType.Type.TEXT),
+    np.dtype("bool"): exp.DataType.build(exp.DataType.Type.BOOLEAN),
+    np.dtype("datetime64"): exp.DataType.build(exp.DataType.Type.TIMESTAMP),
+    np.dtype("datetime64[D]"): exp.DataType.build(exp.DataType.Type.DATE),
+    np.dtype("datetime64[s]"): exp.DataType.build(exp.DataType.Type.TIMESTAMP),
+    np.dtype("datetime64[ms]"): exp.DataType.build(exp.DataType.Type.TIMESTAMP),
+    np.dtype("datetime64[us]"): exp.DataType.build(exp.DataType.Type.TIMESTAMP),
+    np.dtype("datetime64[ns]"): exp.DataType.build(exp.DataType.Type.TIMESTAMP),
+    np.dtype("timedelta64"): exp.DataType.build(exp.DataType.Type.INTERVAL),
+    np.dtype("timedelta64[s]"): exp.DataType.build(exp.DataType.Type.INTERVAL),
+    np.dtype("timedelta64[ms]"): exp.DataType.build(exp.DataType.Type.INTERVAL),
+    np.dtype("timedelta64[us]"): exp.DataType.build(exp.DataType.Type.INTERVAL),
+    np.dtype("timedelta64[ns]"): exp.DataType.build(exp.DataType.Type.INTERVAL),
+
+    # Pandas Extension Types (Classes & Instances)
     pd.Int8Dtype: exp.DataType.build(exp.DataType.Type.TINYINT),
+    pd.Int8Dtype(): exp.DataType.build(exp.DataType.Type.TINYINT),
     pd.Int16Dtype: exp.DataType.build(exp.DataType.Type.SMALLINT),
+    pd.Int16Dtype(): exp.DataType.build(exp.DataType.Type.SMALLINT),
     pd.Int32Dtype: exp.DataType.build(exp.DataType.Type.INT),
+    pd.Int32Dtype(): exp.DataType.build(exp.DataType.Type.INT),
     pd.Int64Dtype: exp.DataType.build(exp.DataType.Type.BIGINT),
+    pd.Int64Dtype(): exp.DataType.build(exp.DataType.Type.BIGINT),
     pd.UInt8Dtype: exp.DataType.build(exp.DataType.Type.UTINYINT),
+    pd.UInt8Dtype(): exp.DataType.build(exp.DataType.Type.UTINYINT),
     pd.UInt16Dtype: exp.DataType.build(exp.DataType.Type.USMALLINT),
+    pd.UInt16Dtype(): exp.DataType.build(exp.DataType.Type.USMALLINT),
     pd.UInt32Dtype: exp.DataType.build(exp.DataType.Type.UINT),
+    pd.UInt32Dtype(): exp.DataType.build(exp.DataType.Type.UINT),
     pd.UInt64Dtype: exp.DataType.build(exp.DataType.Type.UBIGINT),
+    pd.UInt64Dtype(): exp.DataType.build(exp.DataType.Type.UBIGINT),
     pd.Float32Dtype: exp.DataType.build(exp.DataType.Type.FLOAT),
+    pd.Float32Dtype(): exp.DataType.build(exp.DataType.Type.FLOAT),
     pd.Float64Dtype: exp.DataType.build(exp.DataType.Type.DOUBLE),
+    pd.Float64Dtype(): exp.DataType.build(exp.DataType.Type.DOUBLE),
     pd.StringDtype: exp.DataType.build(exp.DataType.Type.TEXT),  # type: ignore
+    pd.StringDtype(): exp.DataType.build(exp.DataType.Type.TEXT),
     pd.BooleanDtype: exp.DataType.build(exp.DataType.Type.BOOLEAN),
+    pd.BooleanDtype(): exp.DataType.build(exp.DataType.Type.BOOLEAN),
     pd.DatetimeTZDtype: exp.DataType.build(exp.DataType.Type.TIMESTAMPTZ),
-    pd.ArrowDtype: exp.DataType.build(exp.DataType.Type.ARRAY),
     pd.CategoricalDtype: exp.DataType.build(exp.DataType.Type.USERDEFINED),
     pd.SparseDtype: exp.DataType.build(exp.DataType.Type.USERDEFINED),
     pd.PeriodDtype: exp.DataType.build(exp.DataType.Type.USERDEFINED),
     pd.IntervalDtype: exp.DataType.build(exp.DataType.Type.USERDEFINED),
+
+    # PySpark Types
     pyspark_types.ByteType: exp.DataType.build(exp.DataType.Type.TINYINT),
     pyspark_types.ShortType: exp.DataType.build(exp.DataType.Type.SMALLINT),
     pyspark_types.IntegerType: exp.DataType.build(exp.DataType.Type.INT),
@@ -270,24 +322,112 @@ _TYPE_MAPPINGS = {
     pyspark_types.NullType: exp.DataType.build(exp.DataType.Type.NULL),
     pyspark_types.UserDefinedType: exp.DataType.build(exp.DataType.Type.USERDEFINED),
 }
+try:
+    _TYPE_MAPPINGS[pd.StringDtype("pyarrow")] = exp.DataType.build(exp.DataType.Type.TEXT)
+except Exception:
+    pass
 
-def columns_to_types_from_df(df: DataFrameType) -> t.Dict[str, exp.DataType]:
-    if isinstance(df, pd.DataFrame):
-        result = OrderedDict()
-        for column_name, column_type in df.dtypes.items():
-            exp_type: t.Optional[exp.DataType] = None
-            if isinstance(column_type, np.dtypes.ObjectDType):
+@lru_cache()
+def get_pandas_type_mappings() -> t.Dict[t.Any, exp.DataType]:
+    return _TYPE_MAPPINGS
+
+def _arrow_type_to_sqlglot(pa_type: pa.DataType) -> exp.DataType:
+    """
+    Converts a PyArrow DataType to an equivalent SQLGlot DataType.
+    """
+    if pa.types.is_boolean(pa_type):
+        return exp.DataType.build(exp.DataType.Type.BOOLEAN)
+    elif pa.types.is_int8(pa_type):
+        return exp.DataType.build(exp.DataType.Type.TINYINT)
+    elif pa.types.is_int16(pa_type):
+        return exp.DataType.build(exp.DataType.Type.SMALLINT)
+    elif pa.types.is_int32(pa_type):
+        return exp.DataType.build(exp.DataType.Type.INT)
+    elif pa.types.is_int64(pa_type):
+        return exp.DataType.build(exp.DataType.Type.BIGINT)
+    elif pa.types.is_uint8(pa_type):
+        return exp.DataType.build(exp.DataType.Type.UTINYINT)
+    elif pa.types.is_uint16(pa_type):
+        return exp.DataType.build(exp.DataType.Type.USMALLINT)
+    elif pa.types.is_uint32(pa_type):
+        return exp.DataType.build(exp.DataType.Type.UINT)
+    elif pa.types.is_uint64(pa_type):
+        return exp.DataType.build(exp.DataType.Type.UBIGINT)
+    elif pa.types.is_float16(pa_type) or pa.types.is_float32(pa_type):
+        return exp.DataType.build(exp.DataType.Type.FLOAT)
+    elif pa.types.is_float64(pa_type):
+        return exp.DataType.build(exp.DataType.Type.DOUBLE)
+    elif pa.types.is_string(pa_type) or pa.types.is_large_string(pa_type):
+        return exp.DataType.build(exp.DataType.Type.TEXT)
+    elif pa.types.is_binary(pa_type) or pa.types.is_large_binary(pa_type):
+        return exp.DataType.build(exp.DataType.Type.BINARY)
+    elif pa.types.is_date(pa_type):
+        return exp.DataType.build(exp.DataType.Type.DATE)
+    elif pa.types.is_timestamp(pa_type):
+        return (
+            exp.DataType.build(exp.DataType.Type.TIMESTAMPTZ)
+            if getattr(pa_type, "tz", None)
+            else exp.DataType.build(exp.DataType.Type.TIMESTAMP)
+        )
+    elif pa.types.is_duration(pa_type):
+        return exp.DataType.build(exp.DataType.Type.INTERVAL)
+    elif pa.types.is_decimal(pa_type):
+        return exp.DataType.build(exp.DataType.Type.DECIMAL)
+    elif pa.types.is_list(pa_type) or pa.types.is_large_list(pa_type):
+        return exp.DataType.build(exp.DataType.Type.ARRAY)
+    elif pa.types.is_map(pa_type):
+        return exp.DataType.build(exp.DataType.Type.MAP)
+    elif pa.types.is_struct(pa_type):
+        return exp.DataType.build(exp.DataType.Type.STRUCT)
+    elif pa.types.is_null(pa_type):
+        return exp.DataType.build(exp.DataType.Type.NULL)
+
+    return exp.DataType.build(exp.DataType.Type.USERDEFINED)
+
+def columns_to_types_from_dtypes(
+    dtypes: t.Iterable[t.Tuple[t.Hashable, t.Any]],
+    df: t.Optional[pd.DataFrame] = None,
+) -> t.Dict[str, exp.DataType]:
+    result = OrderedDict()
+    type_mappings = get_pandas_type_mappings()
+    for column_name, column_type in dtypes:
+        exp_type: t.Optional[exp.DataType] = None
+        # Check DatetimeTZDtype explicitly
+        if hasattr(pd, "DatetimeTZDtype") and isinstance(column_type, pd.DatetimeTZDtype):
+            exp_type = exp.DataType.build(exp.DataType.Type.TIMESTAMPTZ)
+        # Check ArrowDtype dynamically
+        elif hasattr(pd, "ArrowDtype") and isinstance(column_type, pd.ArrowDtype):
+            exp_type = _arrow_type_to_sqlglot(column_type.pyarrow_dtype)
+        # Check Object dtype with sample inference if DataFrame is available
+        elif (
+            column_type == np.dtype("O")
+            or column_type == object
+            or getattr(column_type, "kind", None) == "O"
+            or isinstance(column_type, getattr(np.dtypes, "ObjectDType", ()))
+        ):
+            if df is not None and column_name in df.columns:
                 series = df[column_name]
                 series_not_null = series[~series.isnull()]
                 if series_not_null.shape[0] > 0:
-                    exp_type = _TYPE_MAPPINGS.get(type(series_not_null.iat[0]), exp.DataType.build("text"))
+                    sample_val = series_not_null.iat[0]
+                    exp_type = type_mappings.get(
+                        type(sample_val), exp.DataType.build(exp.DataType.Type.TEXT)
+                    )
                 else:
-                    exp_type = _TYPE_MAPPINGS.get(type(column_type))
+                    exp_type = exp.DataType.build(exp.DataType.Type.TEXT)
             else:
-                exp_type = _TYPE_MAPPINGS.get(type(column_type))
-            if not exp_type:
-                raise ValueError(f"Unsupported pandas type '{column_type}'")
-            result[str(column_name)] = exp_type
+                exp_type = exp.DataType.build(exp.DataType.Type.TEXT)
+        else:
+            exp_type = type_mappings.get(column_type) or type_mappings.get(type(column_type))
+
+        if not exp_type:
+            raise ValueError(f"Unsupported pandas type '{column_type}'")
+        result[str(column_name)] = exp_type
+    return result
+
+def columns_to_types_from_df(df: DataFrameType) -> t.Dict[str, exp.DataType]:
+    if isinstance(df, pd.DataFrame):
+        return columns_to_types_from_dtypes(df.dtypes.items(), df=df)
     elif isinstance(df, pyspark.sql.DataFrame):
         result = OrderedDict()
         for column in df.schema:
@@ -336,8 +476,11 @@ def cast_pandas(df: pd.DataFrame, column_name: str, dtype: str) -> pd.Series:
         return df[column_name].map(dict, na_action="ignore")
     return df[column_name].astype(dtype)
 
-def get_spark_data_type(data_type: str, data_type_params: t.Optional[t.List[t.Any]] = []):
+def get_spark_data_type(data_type: str, data_type_params: t.Optional[t.List[t.Any]] = None):
     from pyspark.sql.types import _parse_datatype_string
+
+    if data_type_params is None:
+        data_type_params = []
 
     ddl = data_type
     if data_type_params:

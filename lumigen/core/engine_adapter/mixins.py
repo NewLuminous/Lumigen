@@ -9,9 +9,10 @@ from sqlmesh.core.engine_adapter.shared import DataObject
 
 if t.TYPE_CHECKING:
     from core.config.job import DataLoadMode
-    from sqlmesh.core.engine_adapter._typing import DF, Query
+    from sqlmesh.core.engine_adapter._typing import DF, Query, QueryOrDF
 
 from core.dialect import select_from_values_for_batch_range
+from utils.dataset import columns_to_types_from_df
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +132,18 @@ class EngineAdapterMixin(EngineAdapter):
 
     def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None) -> t.List[DataObject]:
         raise NotImplementedError()
+
+    def _columns_to_types(
+            self,
+            query_or_df: QueryOrDF,
+            target_columns_to_types: t.Optional[t.Dict[str, exp.DataType]] = None,
+            source_columns: t.Optional[t.List[str]] = None,
+        ) -> t.Tuple[t.Optional[t.Dict[str, exp.DataType]], t.Optional[t.List[str]]]:
+            import pandas as pd
+    
+            if not target_columns_to_types and isinstance(query_or_df, pd.DataFrame):
+                target_columns_to_types = columns_to_types_from_df(t.cast(pd.DataFrame, query_or_df))
+            return super()._columns_to_types(query_or_df, target_columns_to_types=target_columns_to_types, source_columns=source_columns)
     
     def _values_to_sql(
         self,

@@ -1,5 +1,6 @@
 """Contains MSSQLEngineAdapter."""
 
+from __future__ import annotations
 import typing as t
 
 from sqlglot import exp
@@ -8,6 +9,9 @@ from sqlmesh.core.engine_adapter.shared import (
     DataObject,
     DataObjectType,
 )
+
+if t.TYPE_CHECKING:
+    from sqlmesh.core.engine_adapter._typing import QueryOrDF
 
 from core.engine_adapter.mixins import EngineAdapterMixin, FetchBatchMixin
 
@@ -24,12 +28,37 @@ class MSSQLEngineAdapter(
             # pymssql.Connection.bulk_copy() doesn't work with nvarchar, so load into varbinary column and cast to nvarchar in SELECT statement.
             # Reference: https://github.com/pymssql/pymssql/issues/725#issuecomment-2067618289
             if kind.is_type(exp.DataType.Type.NVARCHAR):
-                df[column] = df[column].apply(lambda s: s.encode("UTF-16LE") if s is not None else s)
+                df[column] = df[column].apply(lambda s: s.encode("UTF-16LE") if isinstance(s, str) else s)
                 columns_to_types[column] = exp.DataType.build("VARBINARY(MAX)")
 
             # Use varbinary intead of binary for temporary table.
             if kind.is_type(exp.DataType.Type.BINARY):
                 columns_to_types[column] = exp.DataType.build("VARBINARY(MAX)")
+
+    def _columns_to_types(
+        self,
+        query_or_df: QueryOrDF,
+        target_columns_to_types: t.Optional[t.Dict[str, exp.DataType]] = None,
+        source_columns: t.Optional[t.List[str]] = None,
+    ) -> t.Tuple[t.Optional[t.Dict[str, exp.DataType]], t.Optional[t.List[str]]]:
+        """
+        Ensures all inferred string/text columns are mapped to NVARCHAR(MAX) for MSSQL.
+        This ensures newly created tables support full Unicode.
+        """
+        target_columns_to_types, source_columns = super()._columns_to_types(
+            query_or_df, target_columns_to_types, source_columns
+        )
+
+        if target_columns_to_types:
+            target_columns_to_types = {
+                col: (
+                    exp.DataType.build("NVARCHAR(MAX)", dialect=self.dialect)
+                    if kind.is_type("text", "varchar") and not kind.is_type("nvarchar")
+                    else kind
+                )
+                for col, kind in target_columns_to_types.items()
+            }
+        return target_columns_to_types, source_columns
 
     def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None) -> t.List[DataObject]:
         keyword = keyword.strip()
