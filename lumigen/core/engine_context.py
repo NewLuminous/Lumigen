@@ -109,7 +109,13 @@ class SQLContextManager:
             return False
         try:
             # Query the Java Spark Context directly to see if it has been stopped
-            return not self._spark_session.sparkContext._jsc.sc().isStopped()
+            sc = self._spark_session.sparkContext
+            if sc._jsc is None or sc._jsc.sc().isStopped():
+                return False
+
+            # Ping the JVM directly across the Py4J gateway
+            sc._jvm.java.lang.System.currentTimeMillis()
+            return True
         except Exception:
             # If accessing the JVM throws an error (e.g. Py4J Network Error), the session is dead
             return False
@@ -117,7 +123,7 @@ class SQLContextManager:
     def get_spark_session(
             self,
             app_name: t.Optional[str] = None,
-            conf: t.Optional['SparkConf'] = None,
+            conf: t.Optional[t.Union['SparkConf', t.Dict[str, t.Any]]] = None,
             hive_support: t.Optional[bool] = True,
             log_level: t.Optional[str] = "INFO",
             force_restart: bool = False,
@@ -130,7 +136,7 @@ class SQLContextManager:
 
         Args:
             app_name: The name for the Spark application.
-            conf: A SparkConf object for custom configuration.
+            conf: A SparkConf object or dictionary for custom configuration.
             hive_support: Whether to enable Hive support. Defaults to True.
             log_level: Defaults to INFO.
             force_restart: If True, terminates the active Spark session, clears previous configurations, and builds a completely new session. 
@@ -143,6 +149,15 @@ class SQLContextManager:
             SparkTimeoutError: If the session creation exceeds the specified timeout.
             Exception: Any other exception raised during Spark initialization.
         """
+        def _extract_conf_dict(c: t.Any) -> t.Dict[str, str]:
+            if c is None:
+                return {}
+            if hasattr(c, "getAll"):
+                return dict(c.getAll())
+            if isinstance(c, dict):
+                return {str(k): str(v) for k, v in c.items()}
+            return {}
+
         if force_restart:
             with self._spark_lock:
                 if self._spark_session:
@@ -154,10 +169,7 @@ class SQLContextManager:
                 
                 self._spark_session = None
                 self._spark_status = SparkStatus.UNINITIALIZED
-                if conf is not None:
-                    self._persisted_spark_conf = dict(conf.getAll())
-                else:
-                    self._persisted_spark_conf = {}
+                self._persisted_spark_conf = _extract_conf_dict(conf)
         else:
             # Incremental configuration updates
             if conf is not None:
@@ -174,6 +186,15 @@ class SQLContextManager:
         if self._spark_session and not self.is_spark_alive():
             logger.warning("Active Spark session found to be dead or stopped. Resetting state for re-initialization.")
             with self._spark_lock:
+                try:
+                    self._spark_session.stop()
+                except Exception:
+                    pass
+
+                # Reset PySpark's internal singleton references so a fresh JVM can spawn
+                from pyspark.sql import SparkSession
+                SparkSession._instantiatedSession = None
+
                 self._spark_status = SparkStatus.UNINITIALIZED
                 self._spark_session = None
         

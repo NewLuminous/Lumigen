@@ -912,29 +912,29 @@ class SparkConnectionConfig(ConnectionConfig):
 
     @property
     def _static_connection_kwargs(self) -> t.Dict[str, t.Any]:
-        from pyspark.conf import SparkConf
         from core.engine_context import SQLContextManager
 
-        spark_config = SparkConf()
-        # Static configurations
+        if self.config_dir:
+            os.environ["SPARK_CONF_DIR"] = self.config_dir
+
+        final_conf: t.Dict[str, str] = {str(k): str(v) for k, v in (self.config or {}).items()}
         static_confs = {
             "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions", # For Iceberg
         }
         for k, v in static_confs.items():
-            if self.config.get(k):
-                self.config[k] = self.config[k] + "," + v
+            existing = final_conf.get(k)
+            if existing:
+                parts = [p.strip() for p in existing.split(",") if p.strip()]
+                if v not in parts:
+                    parts.append(v)
+                final_conf[k] = ",".join(parts)
             else:
-                self.config[k] = v
-
-        for k, v in self.config.items():
-            spark_config.set(k, v)
-
-        if self.config_dir:
-            os.environ["SPARK_CONF_DIR"] = self.config_dir
+                final_conf[k] = v
+        
         return {
             "spark": SQLContextManager().get_spark_session(
                 app_name=self.app_name,
-                conf=spark_config,
+                conf=final_conf,  # Passing plain dict avoids Py4J dead-gateway crashes
                 hive_support=self.hive_support,
                 log_level=self.log_level,
             )
