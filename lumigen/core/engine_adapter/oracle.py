@@ -510,7 +510,7 @@ class OracleEngineAdapter(
             for row in df.itertuples()
         ]
     
-    def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None) -> t.List[DataObject]:
+    def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None, exclude_unknown: bool=False, *args) -> t.List[DataObject]:
         keyword = keyword.strip()
         if '.' in keyword:
             schema = keyword.split('.')[0]
@@ -533,6 +533,17 @@ class OracleEngineAdapter(
             query = query.where(exp.column("object_name").ilike(table_pattern))
         if schema_pattern:
             query = query.where(exp.column("owner").ilike(schema_pattern))
+        if exclude_unknown:
+            known_types = [
+                dt.value.upper().replace("_", " ")
+                for dt in (
+                    DataObjectType.TABLE,
+                    DataObjectType.VIEW,
+                    DataObjectType.MATERIALIZED_VIEW,
+                    DataObjectType.MANAGED_TABLE,
+                )
+            ]
+            query = query.where(exp.column("object_type").isin(*known_types))
         if limit is not None:
             query = query.limit(limit)
         df = self.fetchdf(query)

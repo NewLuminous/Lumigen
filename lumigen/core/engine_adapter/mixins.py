@@ -130,7 +130,7 @@ class EngineAdapterMixin(EngineAdapter):
         except:
             return column_exp.sql()
 
-    def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None) -> t.List[DataObject]:
+    def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None, exclude_unknown: bool=False, *args) -> t.List[DataObject]:
         raise NotImplementedError()
 
     def _columns_to_types(

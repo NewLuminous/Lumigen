@@ -60,7 +60,7 @@ class MSSQLEngineAdapter(
             }
         return target_columns_to_types, source_columns
 
-    def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None) -> t.List[DataObject]:
+    def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None, exclude_unknown: bool=False, *args) -> t.List[DataObject]:
         keyword = keyword.strip()
         if '.' in keyword:
             schema = keyword.split('.')[0]
@@ -87,6 +87,10 @@ class MSSQLEngineAdapter(
             query = query.where(exp.column("TABLE_NAME").like(table_pattern))
         if schema_pattern:
             query = query.where(exp.column("TABLE_SCHEMA").like(schema_pattern))
+        if exclude_unknown:
+            query = query.where(
+                exp.column("TABLE_TYPE").isin("BASE TABLE", "VIEW")
+            )
         if limit is not None:
             query = query.limit(limit)
         dataframe = self.fetchdf(query)

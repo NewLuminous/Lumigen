@@ -79,7 +79,7 @@ class MySQLEngineAdapter(
 
         super().execute(expressions, ignore_unsupported_errors, quote_identifiers, track_rows_processed, **kwargs)
 
-    def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None) -> t.List[DataObject]:
+    def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None, exclude_unknown: bool=False, *args) -> t.List[DataObject]:
         keyword = keyword.strip()
         if '.' in keyword:
             schema = keyword.split('.')[0]
@@ -103,15 +103,23 @@ class MySQLEngineAdapter(
                     exp.column("table_type").eq("VIEW"),
                     exp.Literal.string("view"),
                 )
-                .else_("table_type")
+                .when(
+                    exp.column("table_type").eq("SYSTEM VIEW"),
+                    exp.Literal.string("view"),
+                )
+                .else_(exp.column("table_type"))
                 .as_("type"),
             )
             .from_(exp.table_("tables", db="information_schema"))
         )
         if table_pattern:
-            query = query.where(exp.column("table_name").ilike(table_pattern))
+            query = query.where(exp.column("table_name").like(table_pattern))
         if schema_pattern:
-            query = query.where(exp.column("table_schema").ilike(schema_pattern))
+            query = query.where(exp.column("table_schema").like(schema_pattern))
+        if exclude_unknown:
+            query = query.where(
+                exp.column("table_type").isin("BASE TABLE", "VIEW", "SYSTEM VIEW")
+            )
         if limit is not None:
             query = query.limit(limit)
         df = self.fetchdf(query)

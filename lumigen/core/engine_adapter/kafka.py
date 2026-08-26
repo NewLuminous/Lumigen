@@ -214,7 +214,7 @@ class KafkaEngineAdapter(
             exp.Identifier(this=catalog) if catalog else None,
         )
     
-    def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None) -> t.List[DataObject]:
+    def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None, *args) -> t.List[DataObject]:
         keyword = keyword.strip()
         cursor: KafkaClientCursor = self.cursor
         data_objects = []
