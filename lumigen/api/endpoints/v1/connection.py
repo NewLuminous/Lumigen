@@ -36,12 +36,13 @@ async def test_connection(conn_config: t.Dict[str, t.Any],
 async def list_data_objects(conn_config: t.Dict[str, t.Any],
                             type: t.Optional[DataObjectType]=None,
                             keyword: t.Optional[str]='',
+                            limit: t.Optional[int]=1000,
                             executor: ThreadPoolExecutor = Depends(get_custom_executor)):
     loop = asyncio.get_running_loop()
     conn = await loop.run_in_executor(executor, parse_connection, conn_config)
     engine_adapter = t.cast("EngineAdapterMixin", conn.create_engine_adapter())
     try:
-        data_objects = await loop.run_in_executor(executor, engine_adapter.get_all_data_objects, keyword)
+        data_objects = await loop.run_in_executor(executor, engine_adapter.get_all_data_objects, keyword, limit, True)
     except Exception as e:
         logger.error(f"Error fetching data objects: {e}")
         return []

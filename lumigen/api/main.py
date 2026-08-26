@@ -32,6 +32,17 @@ async def lifespan(app: FastAPI):
         spark_conf = SparkConf(loadDefaults=False)
         spark_conf.setMaster("local[*]")
         spark_conf.set("spark.eventLog.enabled", False)
+
+        # Bind strictly to loopback (avoids container hostname DNS issues)
+        spark_conf.set("spark.driver.host", "127.0.0.1")
+        spark_conf.set("spark.driver.bindAddress", "127.0.0.1")
+
+        # Relax timeouts for web server background idle periods
+        spark_conf.set("spark.network.timeout", "800s")
+        spark_conf.set("spark.executor.heartbeatInterval", "60s")
+        spark_conf.set("spark.rpc.askTimeout", "120s")
+        spark_conf.set("spark.rpc.lookupTimeout", "120s")
+
         context_manager.get_spark_session(app_name="Job runner API", conf=spark_conf, hive_support=False, log_level="WARN")
 
     spark_init_thread = threading.Thread(target=initialize_spark_in_background, daemon=True)
