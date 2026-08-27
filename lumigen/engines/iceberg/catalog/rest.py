@@ -31,7 +31,19 @@ class RestCatalog(BaseRestCatalog):
         if s3_access_key and s3_secret_key and not properties.get(CREDENTIAL):
             properties[CREDENTIAL] = f"{s3_access_key}:{s3_secret_key}"
 
+        # Disable STS credential vending so SeaweedFS does not throw 501 Not Implemented
+        properties.setdefault("header.X-Iceberg-Access-Delegation", "")
+
         super().__init__(name, **properties)
+
+        # Strip the header from the active HTTP session as a safety measure
+        self._session.headers.pop("X-Iceberg-Access-Delegation", None)
+
+    def table_exists(self, identifier: str | Identifier) -> bool:
+        try:
+            return super().table_exists(identifier)
+        except (NoSuchTableError, NotImplementedError):
+            return False
 
     def _bootstrap_namespace(self, namespace: str | Identifier) -> None:
         """
