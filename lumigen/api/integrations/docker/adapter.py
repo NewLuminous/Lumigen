@@ -22,6 +22,7 @@ if t.TYPE_CHECKING:
 from core.config.job import JobMode
 from utils import yaml
 from utils.formatting import format_seconds_timestamp
+from utils.helpers import get_system_timezone
 from api.config import settings
 from api.enums import JobStatus
 from api.schemas import JobStatusResponse, JobInfoResponse, JobMetricsResponse, DataFetchResponse
@@ -127,9 +128,9 @@ class DockerAdapter(JobManagerAdapter):
                 volumes = {
                     #str(host_project_path): {'bind': '/opt/spark/work-dir', 'mode': 'ro'},
                 }
-                # Sync container time with host time for accurate logging
-                if Path('/etc/localtime').exists():
-                    volumes['/etc/localtime'] = {'bind': '/etc/localtime', 'mode': 'ro'}
+
+                # if Path('/etc/localtime').exists():
+                #     volumes['/etc/localtime'] = {'bind': '/etc/localtime', 'mode': 'ro'}
 
                 with tempfile.NamedTemporaryFile(mode='w', suffix=".yaml", prefix=f"{name}_{id}_", delete=False) as tmp_file:
                     config_as_dict = json.loads(config.json())
@@ -152,6 +153,7 @@ class DockerAdapter(JobManagerAdapter):
                     auto_remove=False,
                     network_mode="host",
                     volumes=volumes,
+                    environment={"TZ": get_system_timezone()},
                     name=container_name,
                     image=settings.JOB_IMAGE_NAME,
                     command=command,
@@ -491,9 +493,9 @@ class DockerAdapter(JobManagerAdapter):
             volumes = {
                 #str(host_project_path): {'bind': '/opt/spark/work-dir', 'mode': 'ro'},
             }
-            # Sync container time with host time for accurate logging
-            if Path('/etc/localtime').exists():
-                volumes['/etc/localtime'] = {'bind': '/etc/localtime', 'mode': 'ro'}
+
+            # if Path('/etc/localtime').exists():
+            #     volumes['/etc/localtime'] = {'bind': '/etc/localtime', 'mode': 'ro'}
 
             with tempfile.NamedTemporaryFile(mode='w', suffix=".yaml", prefix=f"temp_", delete=False) as tmp_file:
                 config_as_dict = json.loads(config.json())
@@ -855,6 +857,7 @@ class DockerAdapter(JobManagerAdapter):
                 remove=True,
                 network_mode="host",
                 volumes=volumes,
+                environment={"TZ": get_system_timezone()},
                 name=container_name,
                 image=image_name,
                 command=command,

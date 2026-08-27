@@ -11,9 +11,9 @@ services:
       - .env
     environment:
       - KUBECONFIG=/etc/kubeconfig
+      - TZ=${TZ:-UTC}
     volumes:
       - ./kubeconfig:/etc/kubeconfig:ro
-      - /etc/localtime:/etc/localtime:ro
 
       # Allows the API container to spawn sibling "job" containers on the host Docker daemon.
       - /var/run/docker.sock:/var/run/docker.sock

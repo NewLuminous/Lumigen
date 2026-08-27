@@ -24,6 +24,7 @@ if t.TYPE_CHECKING:
 
 from core.config.job import JobMode
 from utils import yaml
+from utils.helpers import get_system_timezone
 from api.config import settings
 from api.enums import JobStatus
 from api.schemas import JobStatusResponse, JobInfoResponse, JobMetricsResponse, DataFetchResponse
@@ -90,18 +91,8 @@ class KubernetesAdapter(JobManagerAdapter):
 
         logger.info(f"Kubernetes adapter initialized for namespace '{self.namespace}'.")
 
-        self.host_timezone = "Etc/UTC"
-        try:
-            localtime_path = Path("/etc/localtime")
-            if localtime_path.exists() and localtime_path.is_symlink():
-                resolved_path = localtime_path.resolve()
-                tz_name = str(resolved_path.relative_to("/usr/share/zoneinfo"))
-                self.host_timezone = tz_name
-                logger.info(f"Automatically detected host timezone as '{self.host_timezone}'.")
-            else:
-                logger.warning("Could not resolve /etc/localtime symlink. Defaulting to UTC timezone for pods.")
-        except Exception as e:
-            logger.error(f"Error detecting host timezone, defaulting to UTC. Reason: {e}")
+        self.host_timezone = get_system_timezone()
+        logger.info(f"Configured timezone for Kubernetes pods as '{self.host_timezone}'.")
 
     def _perform_submit(self, config: Config, id: str, name: t.Optional[str] = None, checkpoint_dir: t.Optional[str]=None) -> JobStatusResponse:
         id_in_k8s_name = self._normalize_k8s_name(id)

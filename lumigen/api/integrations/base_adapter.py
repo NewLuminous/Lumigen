@@ -8,6 +8,7 @@ if t.TYPE_CHECKING:
     from core.config.root import Config
     from core.config.connection import SparkConnectionConfig
 
+from utils.helpers import get_system_timezone
 from api.config import settings
 from api.enums import JobStatus
 from api.schemas import JobStatusResponse, JobInfoResponse, JobMetricsResponse
@@ -95,6 +96,10 @@ class JobManagerAdapter(JobPreviewerBase, ABC):
             conf: t.List[str] = options.setdefault("conf", [])
             if t.cast("str", options["master"]).startswith("k8s"):
                 existing_keys = {c.split('=', 1)[0] for c in conf if '=' in c}
+
+                # Get the timezone from the host/API container
+                tz_val = get_system_timezone()
+
                 k8s_defaults = {
                     "spark.driver.port": 0,
                     "spark.driver.bindAddress": "0.0.0.0",
@@ -112,6 +117,9 @@ class JobManagerAdapter(JobPreviewerBase, ABC):
                     "spark.dynamicAllocation.initialExecutors": settings.SPARK_MIN_EXECUTORS,
                     "spark.dynamicAllocation.executorIdleTimeout": "60s", 
                     "spark.dynamicAllocation.schedulerBacklogTimeout": "1s", 
+
+                    "spark.kubernetes.driverEnv.TZ": tz_val,
+                    "spark.executorEnv.TZ": tz_val,
                 }
                 for key, val in k8s_defaults.items():
                     if key not in existing_keys:
