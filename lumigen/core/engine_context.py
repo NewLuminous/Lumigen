@@ -120,6 +120,31 @@ class SQLContextManager:
             # If accessing the JVM throws an error (e.g. Py4J Network Error), the session is dead
             return False
 
+    def _stop_and_reset_spark(self):
+        """
+        Safely stops the Spark session and aggressively clears PySpark's internal singletons
+        to ensure the next getOrCreate() spawns a fresh JVM.
+        MUST BE CALLED INSIDE `self._spark_lock`.
+        """
+        if self._spark_session:
+            try:
+                self._spark_session.stop()
+            except Exception as e:
+                logger.debug(f"Ignored error while stopping Spark session: {e}")
+        
+        try:
+            from pyspark.sql import SparkSession
+            # Reset PySpark's internal singleton references so a fresh JVM can spawn
+            SparkSession._instantiatedSession = None
+            # Also clear builder options so old configs don't leak
+            if hasattr(SparkSession.builder, "_options"):
+                SparkSession.builder._options.clear()
+        except ImportError:
+            pass
+
+        self._spark_status = SparkStatus.UNINITIALIZED
+        self._spark_session = None
+
     def get_spark_session(
             self,
             app_name: t.Optional[str] = None,
@@ -160,20 +185,13 @@ class SQLContextManager:
 
         if force_restart:
             with self._spark_lock:
-                if self._spark_session:
-                    try:
-                        logger.info("Stopping current Spark session to provision a fresh one...")
-                        self._spark_session.stop()
-                    except Exception as e:
-                        logger.warning(f"Error stopping old Spark session: {e}")
-                
-                self._spark_session = None
-                self._spark_status = SparkStatus.UNINITIALIZED
+                logger.info("Force restart requested. Stopping current Spark session...")
+                self._stop_and_reset_spark()
                 self._persisted_spark_conf = _extract_conf_dict(conf)
         else:
             # Incremental configuration updates
             if conf is not None:
-                new_configs = dict(conf.getAll())
+                new_configs = dict(conf.getAll()) if hasattr(conf, "getAll") else conf
                 with self._spark_lock:
                     self._persisted_spark_conf.update(new_configs)
                     if self._spark_session and self.is_spark_alive():
@@ -186,17 +204,9 @@ class SQLContextManager:
         if self._spark_session and not self.is_spark_alive():
             logger.warning("Active Spark session found to be dead or stopped. Resetting state for re-initialization.")
             with self._spark_lock:
-                try:
-                    self._spark_session.stop()
-                except Exception:
-                    pass
-
-                # Reset PySpark's internal singleton references so a fresh JVM can spawn
-                from pyspark.sql import SparkSession
-                SparkSession._instantiatedSession = None
-
-                self._spark_status = SparkStatus.UNINITIALIZED
-                self._spark_session = None
+                # Re-check inside the lock to avoid race conditions
+                if self._spark_session and not self.is_spark_alive():
+                    self._stop_and_reset_spark()
         
         if self._spark_session:
             return self._spark_session
@@ -354,15 +364,20 @@ class SQLContextManager:
     def close(self):
         """Gracefully closes all initialized resources."""
         logger.info("Closing initialized SQL context resources.")
-        if self._duckdb_conn:
-            self._duckdb_conn.close()
-            logger.info("DuckDB connection closed.")
-            self._duckdb_conn = None
-        if self._spark_session:
-            self._spark_session.stop()
-            logger.info("Spark session stopped.")
-            self._spark_status = SparkStatus.UNINITIALIZED
-            self._spark_session = None
+        with self._duckdb_lock:
+            if self._duckdb_conn:
+                self._duckdb_conn.close()
+                logger.info("DuckDB connection closed.")
+                self._duckdb_conn = None
+
+        with self._spark_lock:
+            if self._spark_session:
+                self._stop_and_reset_spark()
+                logger.info("Spark session stopped and cleaned up.")
+
+        with self._polars_lock:
+            if self._polars_context:
+                self._polars_context = None
 
     def __enter__(self) -> 'SQLContextManager':
         """Allows the manager to be used as a context manager."""

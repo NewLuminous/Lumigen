@@ -43,4 +43,12 @@ def get_system_timezone() -> str:
         except Exception:
             pass
 
+    # Use tzlocal (Cross-platform / Windows / macOS / Binary tzfiles)
+    try:
+        import tzlocal
+        if tz_name := tzlocal.get_localzone_name():
+            return tz_name
+    except Exception:
+        pass
+
     return "UTC"

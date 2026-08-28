@@ -87,7 +87,7 @@ class JobContextBuilder:
         self.runtime_environment = runtime_environment
         self.executor = executor_override if executor_override is not None else self.config.executor
 
-    def build(self) -> JobContext:
+    def build(self, log_properties: bool = True) -> JobContext:
         """
         Returns a fully populated JobContext.
         """
@@ -98,7 +98,8 @@ class JobContextBuilder:
             sink_adapter = engine_adapter_factory(self.executor, self.config.sink)
 
         job_props_model = JobPropertiesModel(**self.config.job_properties)
-        logger.info(f"Job properties: {job_props_model.model_dump_json(indent=4, exclude_none=True, exclude='seatunnel_env')}")
+        if log_properties:
+            logger.info(f"Job properties: {job_props_model.model_dump_json(indent=4, exclude_none=True, exclude='seatunnel_env')}")
 
         audit_manager = None
         if self.config.audit_store:
