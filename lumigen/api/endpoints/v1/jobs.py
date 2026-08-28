@@ -21,10 +21,10 @@ preview_job_semaphore = asyncio.Semaphore(settings.PREVIEW_JOB_CONCURRENCY_LIMIT
 
 @router.post("/preview", response_model=JobPreviewResponse)
 async def preview_job(response: Response,
-                      config: Config, sample_size: int = 20,
+                      config: Config, sample_size: int = 20, source_limit: int = 8192,
                       job_manager: JobManagerAdapter = Depends(get_job_manager)):
     async with preview_job_semaphore:
-        response_data = await job_manager.get_data_preview(config, sample_size=sample_size)
+        response_data = await job_manager.get_data_preview(config, sample_size=sample_size, source_limit=source_limit)
     if not response_data.success:
         response.status_code = status.HTTP_400_BAD_REQUEST
     return response_data

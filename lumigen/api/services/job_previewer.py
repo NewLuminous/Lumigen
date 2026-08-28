@@ -3,6 +3,7 @@ import typing as t
 import logging
 import json
 import threading
+import asyncio
 import traceback
 from abc import ABC, abstractmethod
 from sqlglot import exp, Dialects
@@ -27,7 +28,7 @@ class JobPreviewerBase(ABC):
     Subclasses must implement the platform-specific fallback execution strategy.
     """
 
-    async def get_data_preview(self, config: Config, sample_size: int = 20) -> JobPreviewResponse:
+    async def get_data_preview(self, config: Config, sample_size: int = 20, source_limit: int = 8192) -> JobPreviewResponse:
         """
         Generates a preview of the data a job would produce.
         """
@@ -35,14 +36,15 @@ class JobPreviewerBase(ABC):
         if executor:
             executor.log_level = "ERROR" # Reduce log noise for previews
 
-        config.job_properties["source_limit"] = 8192
+        if source_limit:
+            config.job_properties["source_limit"] = source_limit
         config.job_properties["source_batch_size"] = sample_size
         config.audit_store = None
         config.sink = None
 
         try:
             if self._can_run_preview_directly(config):
-                result = self._run_direct_preview(config)
+                result = await asyncio.to_thread(self._run_direct_preview, config)
                 return JobPreviewResponse(
                     success=True,
                     schema=result.get("schema"),
@@ -77,7 +79,7 @@ class JobPreviewerBase(ABC):
 
         try:
             if self._can_run_preview_directly(config, schema_only=True):
-                result = self._run_direct_preview(config)
+                result = await asyncio.to_thread(self._run_direct_preview, config)
                 return JobColumnMapping(
                     success=True,
                     column_mappings=result.get("column_mappings"),

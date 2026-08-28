@@ -91,7 +91,7 @@ class PreviewRunner:
         ) -> t.Optional[int]:
         if do_validate_connections:
             validate_connections([self.config.source, self.config.sink])
-        with self.context_builder.build() as job_context:
+        with self.context_builder.build(log_properties=False) as job_context:
             lazy_dataset = self._read_data(job_context)
             trans_chain = transform_data(self.config.transformation_pipeline, job_context)
             if not self.config.sink:
@@ -110,17 +110,17 @@ class PreviewRunner:
         """Reads a single batch of data from the source, respecting the preview limit."""
         reader = context.source_adapter
         job_props = context.job_props_model
-        limit = job_props.source_limit
         query = self._get_source_query(context)
+
+        limit = job_props.source_limit
+        if limit:
+            if isinstance(query, exp.Select):
+                query = query.limit(limit)
 
         if isinstance(reader, SparkEngineAdapter):
             yield reader.fetch_pyspark_df(query)
         else:
-            limit = job_props.source_limit or job_props.source_batch_size
             if limit:
-                if isinstance(query, exp.Select):
-                    query = query.limit(limit)
-
                 try:
                     reader = t.cast("FetchBatchMixin", reader)
                     for df in reader.fetch_batch_df(query, limit):

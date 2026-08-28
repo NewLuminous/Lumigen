@@ -2,7 +2,6 @@ import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from api.config import settings
@@ -25,28 +24,9 @@ async def lifespan(app: FastAPI):
 
     # Background Spark Session initialization
     from core.engine_context import SQLContextManager
-    from pyspark.conf import SparkConf
-    context_manager = SQLContextManager.get_instance()
+    from api.services.embedded_spark import start_embedded_spark_session
 
-    def initialize_spark_in_background():
-        spark_conf = SparkConf(loadDefaults=False)
-        spark_conf.setMaster("local[*]")
-        spark_conf.set("spark.eventLog.enabled", False)
-
-        # Bind strictly to loopback (avoids container hostname DNS issues)
-        spark_conf.set("spark.driver.host", "127.0.0.1")
-        spark_conf.set("spark.driver.bindAddress", "127.0.0.1")
-
-        # Relax timeouts for web server background idle periods
-        spark_conf.set("spark.network.timeout", "800s")
-        spark_conf.set("spark.executor.heartbeatInterval", "60s")
-        spark_conf.set("spark.rpc.askTimeout", "120s")
-        spark_conf.set("spark.rpc.lookupTimeout", "120s")
-
-        context_manager.get_spark_session(app_name="Job runner API", conf=spark_conf, hive_support=False, log_level="WARN")
-
-    spark_init_thread = threading.Thread(target=initialize_spark_in_background, daemon=True)
-    spark_init_thread.start()
+    start_embedded_spark_session()
 
     # Initialize and start the unified background status watcher
     from api.dependencies import get_job_manager
@@ -70,7 +50,7 @@ async def lifespan(app: FastAPI):
         await app.state.job_status_watcher.stop()
         logger.info("JobStatusWatcher shut down.")
 
-    context_manager.close()
+    SQLContextManager.get_instance().close()
 
 app = FastAPI(title=settings.PROJECT_NAME, lifespan=lifespan)    
 
