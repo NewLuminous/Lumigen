@@ -84,14 +84,24 @@ class BaseSparkFileHandler(ABC):
         # Standardize metadata columns
         path_col = metadata_prefix + "file_path"
         time_col = metadata_prefix + "file_modification_time"
-        target_cols = {path_col, time_col}
-        passthrough_exprs = [f"`{c.replace('`', '``')}`" for c in df.columns if c not in target_cols]
+
         clean_path_expr = f"""CASE 
-            WHEN `{path_col}` LIKE 'hdfs://%' THEN regexp_replace(`{path_col}`, '^hdfs://(?:[^/]+)?', '') 
-            ELSE regexp_replace(`{path_col}`, '^[a-zA-Z][a-zA-Z0-9+.-]*://', '') 
-        END AS `{path_col}`"""
-        utc_time_expr = f"to_utc_timestamp(`{time_col}`, current_timezone()) AS `{time_col}`"
-        df = df.selectExpr(*passthrough_exprs, clean_path_expr, utc_time_expr)
+            WHEN {path_col} LIKE 'hdfs://%' THEN regexp_replace({path_col}, '^hdfs://(?:[^/]+)?', '') 
+            ELSE regexp_replace({path_col}, '^[a-zA-Z][a-zA-Z0-9+.-]*://', '') 
+        END AS {path_col}"""
+
+        # Formats the timestamp to local ISO 8601 with timezone offset
+        formatted_time_expr = f"date_format({time_col}, \"yyyy-MM-dd'T'HH:mm:ssXXX\") AS {time_col}"
+
+        select_exprs = []
+        for col_name in df.columns:
+            if col_name == path_col:
+                select_exprs.append(clean_path_expr)
+            elif col_name == time_col:
+                select_exprs.append(formatted_time_expr)
+            else:
+                select_exprs.append(f"`{col_name.replace('`', '``')}`")
+        df = df.selectExpr(*select_exprs)
             
         return df
 

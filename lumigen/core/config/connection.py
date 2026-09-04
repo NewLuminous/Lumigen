@@ -788,6 +788,23 @@ class FileOptions(BaseModel):
     row_delimiter: str = Field(default="\n")
     field_delimiter: str = Field(default=",")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_known_fields(cls, data: t.Any) -> t.Any:
+        if isinstance(data, dict):
+            allowed_fields = set(cls.model_fields.keys())
+            provided_fields = set(data.keys())
+            extra_fields = provided_fields - allowed_fields
+
+            if extra_fields:
+                extra_str = ", ".join(sorted(f"'{f}'" for f in extra_fields))
+                allowed_str = ", ".join(sorted(f"'{f}'" for f in allowed_fields))
+                raise ValueError(
+                    f"Unsupported parameter(s) {extra_str} in 'file_options'. "
+                    f"Supported options are: {allowed_str}."
+                )
+        return data
+
 
 class FileSystemConnectionConfig(ConnectionConfig):
     file_options: t.Optional[FileOptions] = None
