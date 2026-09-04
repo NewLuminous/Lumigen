@@ -218,6 +218,7 @@ class FileSystemCursor:
             root = "/"
 
         pattern = re.compile(glob_translate(target_path))
+        seen_paths: t.Set[str] = set()
 
         def _traverse_matched_dir(dataset_path: str) -> t.Iterator[t.Tuple[str, t.Dict[str, t.Any]]]:
             # Skip traversing into uncommitted staging directories
@@ -232,7 +233,8 @@ class FileSystemCursor:
                         sub_path = "/" + sub_path
                         
                     if sub_item.get("type") == "file":
-                        if _matches_filter(sub_path, sub_item):
+                        if sub_path not in seen_paths and _matches_filter(sub_path, sub_item):
+                            seen_paths.add(sub_path)
                             yield (sub_path, sub_item)
                     elif sub_item.get("type") == "directory":
                         yield from _traverse_matched_dir(sub_path)
@@ -246,16 +248,19 @@ class FileSystemCursor:
                     full_path: str = info["name"]
                     if target_path.startswith("/") and not full_path.startswith("/"):
                         full_path = "/" + full_path
-                    if pattern.match(full_path) and _matches_filter(full_path, info):
+                    if full_path not in seen_paths and pattern.match(full_path) and _matches_filter(full_path, info):
+                        seen_paths.add(full_path)
                         yield (full_path, info)
 
                 # Check if a directory matches the pattern (i.e. it's a Spark Dataset)
                 for d in dirs:
-                    dir_full_path = f"{dirpath}/{d}".replace("//", "/")
-                    if target_path.startswith("/") and not dir_full_path.startswith("/"):
-                        dir_full_path = "/" + dir_full_path
-                    if pattern.match(dir_full_path):
-                        yield from _traverse_matched_dir(dir_full_path)
+                    dir_ext = t.cast(str, os.path.splitext(d)[1]).lower()
+                    if dir_ext and FileHandlerFactory.get_handler(dir_ext) is not None:
+                        dir_full_path = f"{dirpath}/{d}".replace("//", "/")
+                        if target_path.startswith("/") and not dir_full_path.startswith("/"):
+                            dir_full_path = "/" + dir_full_path
+                        if pattern.match(dir_full_path):
+                            yield from _traverse_matched_dir(dir_full_path)
         except (FileNotFoundError, OSError):
             return
 
