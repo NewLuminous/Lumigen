@@ -1,6 +1,7 @@
 import typing as t
 from pydantic import BaseModel, Field, ValidationError
 from fastapi import HTTPException
+import json
 from core.config.connection import (
     ConnectionConfig,
     connection_config_validator,
@@ -97,7 +98,7 @@ def parse_connection(conn_config: t.Dict[str, t.Any]):
     try:
         conn = connection_config_validator(ConnectionConfig, conn_config)
     except ValidationError as e:
-        raise HTTPException(status_code=422, detail=e.errors())
+        raise HTTPException(status_code=422, detail=json.loads(e.json()))
     except Exception as e:
         raise HTTPException(status_code=409, detail=f"{e}")
     

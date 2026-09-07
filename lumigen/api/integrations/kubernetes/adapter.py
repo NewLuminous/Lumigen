@@ -30,6 +30,7 @@ from api.enums import JobStatus
 from api.schemas import JobStatusResponse, JobInfoResponse, JobMetricsResponse, DataFetchResponse
 from api.integrations.base_adapter import JobManagerAdapter
 from api.integrations.parser import PySparkLogParser
+from api.integrations.victorialogs.client import VictoriaLogsClient
 from api.tools.preview_worker import DATA_START_DELIMITER, DATA_END_DELIMITER
 
 
@@ -71,6 +72,12 @@ class KubernetesAdapter(JobManagerAdapter):
         self.core_v1_api = client.CoreV1Api()
         self.batch_v1_api = client.BatchV1Api()
         self.custom_objects_api = CustomObjectsApi()
+
+        self.logs_provider = settings.LOGS_PROVIDER.lower()
+        if self.logs_provider == "victorialogs":
+            self.vlogs_client = VictoriaLogsClient()
+        else:
+            self.vlogs_client = None
 
         try:
             self.core_v1_api.read_namespace(name=self.namespace)
@@ -236,6 +243,27 @@ class KubernetesAdapter(JobManagerAdapter):
             return JobStatus.PENDING
         return JobStatus.CREATED
     
+    @staticmethod
+    def _get_job_end_time(job: t.Optional[V1Job]) -> t.Optional[datetime]:
+        if not job or not job.status:
+            return None
+
+        status: V1JobStatus = job.status
+        if status.completion_time and isinstance(status.completion_time, datetime):
+            return status.completion_time
+        if status.conditions:
+            terminal_times = []
+            condition: V1JobCondition
+            for condition in status.conditions:
+                if condition.status == "True" \
+                and condition.type in ("Complete", "Failed", "FailureTarget", "Suspended") \
+                and isinstance(condition.last_transition_time, datetime):
+                    terminal_times.append(condition.last_transition_time)
+            if terminal_times:
+                return max(terminal_times)
+
+        return None
+    
     def _get_job_info(self, job: V1Job) -> JobInfoResponse:
         """Gets detailed job info from a Kubernetes Job object with minimal additional API calls."""
         app_name_label = self._normalize_k8s_name(settings.PROJECT_NAME)
@@ -247,9 +275,8 @@ class KubernetesAdapter(JobManagerAdapter):
         if job.status.start_time and isinstance(job.status.start_time, datetime):
             start_time_str = job.status.start_time.isoformat()
 
-        finish_time_str = None
-        if job.status.completion_time and isinstance(job.status.completion_time, datetime):
-            finish_time_str = job.status.completion_time.isoformat()
+        finish_time_obj = self._get_job_end_time(job)
+        finish_time_str = finish_time_obj.isoformat() if finish_time_obj else None
         
         return JobInfoResponse(
             job_id=normalized_id,
@@ -436,13 +463,19 @@ class KubernetesAdapter(JobManagerAdapter):
                      tail: t.Optional[int] = None, since: t.Optional[int] = None,
                      stdout: t.Optional[bool] = True, stderr: t.Optional[bool] = True,
                      timestamps: t.Optional[bool] = False) -> t.Optional[str]:
-        pod = self._get_pod_for_job(id)
-        if not pod:
-            raise HTTPException(status_code=404, detail=f"Job with ID '{id}' does not exist or was removed.")
-        
         if not stdout and not stderr:
             return ""
         
+        pod = self._get_pod_for_job(id)
+        if not pod:
+            # Fallback: Pod is gone.
+            fallback_logs = self._get_fallback_logs(id, tail, since, timestamps)
+            if fallback_logs is not None:
+                return fallback_logs
+
+            raise HTTPException(status_code=404, detail=f"Job with ID '{id}' does not exist or was removed.")
+        
+        # Query the K8s API directly
         since_seconds_param = None
         if since is not None:
             try:
@@ -467,10 +500,56 @@ class KubernetesAdapter(JobManagerAdapter):
             raw_bytes = response.data
             return raw_bytes.decode('utf-8', errors='replace')
         except ApiException as e:
+            # Fallback: Pod was deleted between discovery and reading
+            if e.status == 404:
+                fallback_logs = self._get_fallback_logs(id, tail, since, timestamps)
+                if fallback_logs is not None:
+                    return fallback_logs
+
             error_detail = f"Could not retrieve logs for job '{id}': {e.reason}"
             if e.status == 400: # Bad Request, e.g., pod is still creating
                 error_detail = f"Logs for job '{id}' are not yet available. The pod may still be initializing."
             raise HTTPException(status_code=e.status, detail=error_detail)
+
+    def _get_fallback_logs(self, id: str,
+                           tail: t.Optional[int] = None, since: t.Optional[int] = None,
+                           timestamps: t.Optional[bool] = False,
+    ) -> t.Optional[str]:
+        """Routes historical log requests to the configured LOGS_PROVIDER."""
+        if self.logs_provider == "victorialogs" and self.vlogs_client:
+            job = self._get_job_by_id(id)
+            if job:
+                exact_job_name = job.metadata.name
+                stream_filter = f'{{kubernetes.pod_namespace="{self.namespace}", kubernetes.pod_name=~"{exact_job_name}-.*"}}'
+            else:
+                id_norm = self._normalize_k8s_name(id)
+                stream_filter = f'{{kubernetes.pod_namespace="{self.namespace}", kubernetes.pod_name=~".*-{id_norm}-.*"}}'
+
+            start_time = None
+            if since is not None:
+                start_time = datetime.fromtimestamp(since, tz=timezone.utc)
+            elif job and job.status and job.status.start_time:
+                start_time = job.status.start_time
+
+            end_time = self._get_job_end_time(job)
+
+            records = self.vlogs_client.query_logs(
+                filter_query=stream_filter,
+                tail=tail,
+                start_time=start_time,
+                end_time=end_time,
+            )
+            if not records:
+                return None
+
+            if timestamps:
+                lines = [f"{r.get('_time', '')} {r.get('_msg', '')}" for r in records]
+            else:
+                lines = [r.get("_msg", "") for r in records]
+            
+            return "\n".join(lines)
+            
+        return None
     
     def list_jobs(self, sparse: t.Optional[bool] = True, name: t.Optional[str] = None) -> t.List[t.Dict[str, t.Any]]:
         app_name_label = self._normalize_k8s_name(settings.PROJECT_NAME)

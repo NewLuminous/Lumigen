@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     PROMETHEUS_URL: str = Field(default="http://localhost:9090",
                                 description="The URL for the Prometheus query API endpoint.")
 
+    # Logs Fallback
+    LOGS_PROVIDER: str = Field(default="kubernetes-api",
+                               description="The fallback source for historical logs ('kubernetes-api', 'victorialogs').")
+
+    VICTORIA_LOGS_URL: str = Field(default="http://localhost:9428",
+                                   description="The base URL for the VictoriaLogs query API endpoint.")
+
     # Threading
     MAX_WORKER_THREADS: int = Field(default=32,
                                     description="Maximum number of worker threads for the application.")
