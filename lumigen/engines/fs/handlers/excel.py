@@ -38,10 +38,13 @@ class ExcelFileHandler(BaseFileHandler):
         }
         engine = engine_map.get(file_ext)
 
+        read_params = self._get_read_params(options)
+
         with fs.open(file_path, "rb") as f:
-            sheets_dict = pd.read_excel(f, sheet_name=None, engine=engine)
+            sheets_dict = pd.read_excel(f, sheet_name=None, engine=engine, **read_params)
             for sheet_name, sheet_df in sheets_dict.items():
                 sheet_df[metadata_prefix + "excel_sheet_name"] = sheet_name
+                sheet_df[metadata_prefix + "file_row_number"] = range(1, len(sheet_df) + 1)
                 yield sheet_df
 
     def describe(self, fs: AbstractFileSystem, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> t.Optional[pd.DataFrame]:
@@ -67,11 +70,15 @@ class ExcelFileHandler(BaseFileHandler):
         }
         engine = engine_map.get(file_ext)
 
+        read_params = self._get_read_params(options)
+        # Use nrows=1 to extract only one row without reading full data
+        read_params["nrows"] = 1
+
         with fs.open(file_path, "rb") as f:
-            # Use nrows=1 to extract only one row without reading full data
-            sheets_dict = pd.read_excel(f, sheet_name=None, engine=engine, nrows=1)
+            sheets_dict = pd.read_excel(f, sheet_name=None, engine=engine, **read_params)
             for sheet_name, sheet_df in sheets_dict.items():
                 sheet_df[metadata_prefix + "excel_sheet_name"] = sheet_name
+                sheet_df[metadata_prefix + "file_row_number"] = range(1, len(sheet_df) + 1)
             return pd.concat(sheets_dict.values(), ignore_index=True)
 
     def _write_impl(self, fs: AbstractFileSystem, df: pd.DataFrame, write_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> pd.DataFrame:
@@ -91,6 +98,8 @@ class ExcelFileHandler(BaseFileHandler):
         else:
             engine = "auto"
         
+        write_header = options.header if options else True
+
         with fs.open(write_path, "wb") as f:
             sheet_name_col = metadata_prefix + "excel_sheet_name"
             with pd.ExcelWriter(f, engine=engine) as writer:
@@ -98,9 +107,9 @@ class ExcelFileHandler(BaseFileHandler):
                     for sheet_name, group in df.groupby(sheet_name_col):
                         sheet_name_str = str(sheet_name) if pd.notna(sheet_name) else "Sheet1"
                         clean_group: pd.DataFrame = self._drop_metadata_columns(group, metadata_prefix)
-                        clean_group.to_excel(writer, sheet_name=sheet_name_str, index=False)
+                        clean_group.to_excel(writer, sheet_name=sheet_name_str, index=False, header=write_header)
                 else:
-                    clean_df.to_excel(writer, sheet_name="Sheet1", index=False)
+                    clean_df.to_excel(writer, sheet_name="Sheet1", index=False, header=write_header)
 
         return clean_df
 
@@ -134,6 +143,8 @@ class ExcelFileHandler(BaseFileHandler):
             else:
                 sheets_to_append["Sheet1"] = clean_df
 
+            write_header = options.header if options else True
+
             if has_existing:
                 file_buffer.seek(0)
                 excel_file = pd.ExcelFile(file_buffer, engine=engine)
@@ -142,7 +153,11 @@ class ExcelFileHandler(BaseFileHandler):
                 # VALIDATE SCHEMA
                 for sheet_name, new_df in sheets_to_append.items():
                     if sheet_name in existing_sheet_names:
-                        existing_schema_df = pd.read_excel(excel_file, sheet_name=sheet_name, nrows=0)
+                        # Respect skiprows when inferring the schema of the existing sheet!
+                        read_params = self._get_read_params(options)
+                        read_params["nrows"] = 0 # only read headers
+
+                        existing_schema_df = pd.read_excel(excel_file, sheet_name=sheet_name, **read_params)
                         existing_cols = list(existing_schema_df.columns)
                         new_cols = list(new_df.columns)
                         if existing_cols != new_cols:
@@ -178,29 +193,31 @@ class ExcelFileHandler(BaseFileHandler):
                                 new_df.to_excel(writer, sheet_name=sheet_name, startrow=start_row, index=False, header=False)
                             else:
                                 # Brand new sheet: write normally with header
-                                new_df.to_excel(writer, sheet_name=sheet_name, index=False, header=True)
+                                new_df.to_excel(writer, sheet_name=sheet_name, index=False, header=write_header)
                 else:
                     final_sheets: t.Dict[str, pd.DataFrame] = {}
+                    read_params = self._get_read_params(options)
                     for sheet_name in existing_sheet_names:
                         if sheet_name in sheets_to_append:
-                            existing_df = pd.read_excel(excel_file, sheet_name=sheet_name)
+                            existing_df = pd.read_excel(excel_file, sheet_name=sheet_name, **read_params)
                             final_sheets[sheet_name] = pd.concat([existing_df, sheets_to_append.pop(sheet_name)], ignore_index=True)
                         else:
-                            final_sheets[sheet_name] = pd.read_excel(excel_file, sheet_name=sheet_name)
+                            final_sheets[sheet_name] = pd.read_excel(excel_file, sheet_name=sheet_name, **read_params)
                     
                     # Include remaining brand new sheets
                     for sheet_name, new_df in sheets_to_append.items():
                         final_sheets[sheet_name] = new_df
 
+                    write_header = options.header if options else True
                     file_buffer = io.BytesIO() # Reset buffer
                     with pd.ExcelWriter(file_buffer, engine=engine) as writer:
                         for sheet_name, sheet_df in final_sheets.items():
-                            sheet_df.to_excel(writer, sheet_name=sheet_name, index=False)
+                            sheet_df.to_excel(writer, sheet_name=sheet_name, index=False, header=write_header)
             else:
                 file_buffer = io.BytesIO()
                 with pd.ExcelWriter(file_buffer, engine=engine) as writer:
                     for sheet_name, sheet_df in sheets_to_append.items():
-                        sheet_df.to_excel(writer, sheet_name=sheet_name, index=False)
+                        sheet_df.to_excel(writer, sheet_name=sheet_name, index=False, header=write_header)
 
             # Write the completed buffer back to the file system, replacing the old immutable object
             file_buffer.seek(0)
@@ -208,3 +225,11 @@ class ExcelFileHandler(BaseFileHandler):
                 f.write(file_buffer.read())
 
         return clean_df
+
+    def _get_read_params(self, options: t.Optional[FileOptions]) -> t.Dict[str, t.Any]:
+        params = {"header": 0}
+        if options:
+            params["header"] = 0 if options.header else None
+            if options.excel_skip_rows > 0:
+                params["skiprows"] = options.excel_skip_rows
+        return params

@@ -28,6 +28,9 @@ class FileOptions(BaseModel):
     row_delimiter: str = Field(default="\n")
     field_delimiter: str = Field(default=",")
     compression_codec: t.Optional[str] = None
+    header: bool = Field(default=True, description="Controls whether the first row is treated as column names.")
+
+    excel_skip_rows: int = Field(default=0, description="The number of rows from the beginning of the file that should be ignored.")
 
 class FileRequest(BaseModel):
     """

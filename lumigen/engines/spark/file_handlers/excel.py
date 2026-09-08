@@ -3,6 +3,7 @@ import typing as t
 import os
 import tempfile
 import pandas as pd
+import datetime
 
 if t.TYPE_CHECKING:
     import openpyxl
@@ -48,16 +49,18 @@ class SparkExcelFileHandler(BaseSparkFileHandler):
         if not fs_conn:
             raise ValueError("FileSystemConnection (fs_conn) is required for writing files.")
 
+        cleaned_path = self.strip_scheme(file_path)
+
         # Use a local temp file on driver disk to eliminate s3fs RAM write buffering
         with tempfile.NamedTemporaryFile(suffix=file_ext, delete=False) as tmp_file:
             tmp_file_path = tmp_file.name
 
         try:
             clean_spark_df = self._stream_workbook_to_disk(
-                df, tmp_file_path, metadata_prefix,
+                df, tmp_file_path, options, metadata_prefix,
                 total_row_count=total_row_count, sheet_counts=sheet_counts, sheet_values=sheet_values,
             )
-            fs_conn.get_fs().put_file(tmp_file_path, file_path)
+            fs_conn.get_fs().put_file(tmp_file_path, cleaned_path)
         finally:
             if os.path.exists(tmp_file_path):
                 os.remove(tmp_file_path)
@@ -98,7 +101,7 @@ class SparkExcelFileHandler(BaseSparkFileHandler):
                 tmp_file_path = tmp_file.name
             try:
                 clean_spark_df = self._stream_workbook_to_disk(
-                    df, tmp_file_path, metadata_prefix, 
+                    df, tmp_file_path, options, metadata_prefix, 
                     total_row_count=total_row_count, sheet_counts=sheet_counts, sheet_values=sheet_values,
                     old_wb=None
                 )
@@ -118,7 +121,7 @@ class SparkExcelFileHandler(BaseSparkFileHandler):
             old_wb = openpyxl.load_workbook(in_tmp_path, read_only=True)
             try:
                 clean_spark_df = self._stream_workbook_to_disk(
-                    df, out_tmp_path, metadata_prefix, old_wb=old_wb,
+                    df, out_tmp_path, options, metadata_prefix, old_wb=old_wb,
                     total_row_count=total_row_count, sheet_counts=sheet_counts, sheet_values=sheet_values,
                 )
             finally:
@@ -133,7 +136,8 @@ class SparkExcelFileHandler(BaseSparkFileHandler):
         return clean_spark_df
 
     def _stream_workbook_to_disk(
-        self, df: DataFrame, out_tmp_path: str, metadata_prefix: str, old_wb: t.Optional[openpyxl.Workbook] = None,
+        self, df: DataFrame, out_tmp_path: str, options: t.Optional[FileOptions], metadata_prefix: str,
+        old_wb: t.Optional[openpyxl.Workbook] = None,
         total_row_count: t.Optional[int] = None, sheet_counts: t.Optional[t.Dict[str, int]] = None, sheet_values: t.Optional[t.Dict[str, t.Any]] = None,
     ) -> DataFrame:
         """
@@ -148,6 +152,7 @@ class SparkExcelFileHandler(BaseSparkFileHandler):
 
         clean_spark_df = self._drop_metadata_columns(df, metadata_prefix)
         clean_spark_df, _ = DataFrameConverter._preprocess_spark_df(clean_spark_df)
+        write_header = options.header if options else True
 
         new_wb = xlsxwriter.Workbook(out_tmp_path, {"constant_memory": True})
         try:
@@ -161,7 +166,7 @@ class SparkExcelFileHandler(BaseSparkFileHandler):
 
                         row_count = 0
                         for row_idx, row_vals in enumerate(old_ws.iter_rows(values_only=True)):
-                            new_ws.write_row(row_idx, 0, list(row_vals))
+                            new_ws.write_row(row_idx, 0, self._sanitize_row(row_vals))
                             row_count += 1
 
                         if sheet_name in sheet_values:
@@ -173,6 +178,7 @@ class SparkExcelFileHandler(BaseSparkFileHandler):
                                 raise ValueError(f"Sheet '{sheet_name}' total rows ({row_count + new_rows_count:,}) exceeds Excel limit.")
 
                             clean_sheet_df = self._drop_metadata_columns(sheet_spark_df, metadata_prefix)
+                            # Appending to existing sheet -> do not rewrite header
                             for r_offset, row in enumerate(clean_sheet_df.toLocalIterator(), start=row_count):
                                 new_ws.write_row(r_offset, 0, self._sanitize_row(row))
 
@@ -188,13 +194,16 @@ class SparkExcelFileHandler(BaseSparkFileHandler):
                             raise ValueError(f"Sheet '{sheet_name_str}' contains {sheet_count:,} rows, exceeding Excel's limit.")
 
                         clean_sheet_df = self._drop_metadata_columns(sheet_spark_df, metadata_prefix)
-                        # Write Header Row
-                        new_ws.write_row(0, 0, clean_sheet_df.columns)
+                        
+                        start_offset = 0
+                        if write_header:
+                            new_ws.write_row(0, 0, clean_sheet_df.columns)
+                            start_offset = 1
 
                         # Stream rows from PySpark partitions directly to disk via toLocalIterator
-                        for r_offset, row in enumerate(clean_sheet_df.toLocalIterator(), start=1):
+                        for r_offset, row in enumerate(clean_sheet_df.toLocalIterator(), start=start_offset):
                             new_ws.write_row(r_offset, 0, self._sanitize_row(row))
-            else: # Single sheet append logic
+            else: # Single sheet append/write logic
                 if old_wb is not None:
                     target_sheet = old_wb.sheetnames[0] if old_wb.sheetnames else "Sheet1"
                     for s_name in old_wb.sheetnames:
@@ -203,7 +212,7 @@ class SparkExcelFileHandler(BaseSparkFileHandler):
                         
                         row_count = 0
                         for row_idx, row_vals in enumerate(old_ws.iter_rows(values_only=True)):
-                            new_ws.write_row(row_idx, 0, list(row_vals))
+                            new_ws.write_row(row_idx, 0, self._sanitize_row(row_vals))
                             row_count += 1
                         
                         if s_name == target_sheet:
@@ -219,11 +228,14 @@ class SparkExcelFileHandler(BaseSparkFileHandler):
                         raise ValueError(f"Dataset contains {new_rows_count:,} rows, exceeding Excel's limit.")
 
                     new_ws = new_wb.add_worksheet("Sheet1")
-                    # Write Header Row
-                    new_ws.write_row(0, 0, clean_spark_df.columns)
+                    
+                    start_offset = 0
+                    if write_header:
+                        new_ws.write_row(0, 0, clean_spark_df.columns)
+                        start_offset = 1
 
                     # Stream rows from PySpark partitions directly to disk
-                    for row_idx, row in enumerate(clean_spark_df.toLocalIterator(), start=1):
+                    for row_idx, row in enumerate(clean_spark_df.toLocalIterator(), start=start_offset):
                         new_ws.write_row(row_idx, 0, self._sanitize_row(row))
         finally:
             new_wb.close()
@@ -256,7 +268,13 @@ class SparkExcelFileHandler(BaseSparkFileHandler):
     @staticmethod
     def _sanitize_row(row):
         """Helper to convert nested PySpark Row objects (Structs) into clean Python representations."""
-        return [
-            val.asDict(recursive=True) if hasattr(val, "asDict") else val
-            for val in row
-        ]
+        sanitized = []
+        for val in row:
+            if hasattr(val, "asDict"):
+                sanitized.append(val.asDict(recursive=True))
+            elif isinstance(val, (datetime.date, datetime.datetime)):
+                # Safely serializes datetime objects to string format to prevent xlsxwriter serialization crashes.
+                sanitized.append(val.isoformat())
+            else:
+                sanitized.append(val)
+        return sanitized
