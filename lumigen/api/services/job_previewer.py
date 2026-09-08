@@ -12,7 +12,6 @@ if t.TYPE_CHECKING:
     from core.config.root import Config
     from core.config.connection import SparkConnectionConfig
 
-from core.config.connection import parse_connection_config
 from core.engine_context import SQLContextManager, SparkStatus
 import transformers
 from api.schemas import JobPreviewResponse, JobColumnMapping, DataFetchResponse
@@ -43,13 +42,22 @@ class JobPreviewerBase(ABC):
         config.sink = None
 
         try:
+            await asyncio.to_thread(self._perform_pre_flight_check, config)
+        except Exception as e:
+            logger.info(f"Fast-check validation failed. Aborting preview: {e}")
+            return JobPreviewResponse(
+                success=False, schema=None, data=None,
+                detail=str(e), logs=traceback.format_exc(),
+            )
+
+        try:
             if self._can_run_preview_directly(config):
                 result = await asyncio.to_thread(self._run_direct_preview, config)
                 return JobPreviewResponse(
                     success=True,
                     schema=result.get("schema"),
                     data=result.get("data"),
-                    detail=f"{'Job preview'} ran successfully.",
+                    detail="Job preview ran successfully.",
                     logs="Direct in-process execution."
                 )
         except Exception as e:
@@ -78,6 +86,15 @@ class JobPreviewerBase(ABC):
         config.audit_store = None
 
         try:
+            await asyncio.to_thread(self._perform_pre_flight_check, config)
+        except Exception as e:
+            logger.info(f"Fast-check validation failed. Aborting column mapping: {e}")
+            return JobColumnMapping(
+                success=False, column_mappings=None, unmapped_source_columns=None, unmapped_destination_columns=None,
+                detail=str(e), logs=traceback.format_exc(),
+            )
+
+        try:
             if self._can_run_preview_directly(config, schema_only=True):
                 result = await asyncio.to_thread(self._run_direct_preview, config)
                 return JobColumnMapping(
@@ -85,7 +102,7 @@ class JobPreviewerBase(ABC):
                     column_mappings=result.get("column_mappings"),
                     unmapped_source_columns=result.get("unmapped_source_columns"),
                     unmapped_destination_columns=result.get("unmapped_destination_columns"),
-                    detail=f"{'Job output column mapping'} ran successfully.",
+                    detail="Job output column mapping ran successfully.",
                     logs="Direct in-process execution."
                 )
         except Exception as e:
@@ -101,24 +118,35 @@ class JobPreviewerBase(ABC):
             logs=data_res.logs if data_res.logs else None,
         )
 
-    def _run_direct_preview(self, config: Config) -> dict:
-        """Helper to run the PreviewRunner in-process and capture its result."""
-        result = None
-        def set_output(json_string: str):
-            nonlocal result
-            result = json.loads(json_string)
+    def _perform_pre_flight_check(self, config: Config):
+        source_cfg = config.get_source()
+        engine_adapter_src = source_cfg.create_engine_adapter() if source_cfg else None
+        if engine_adapter_src:
+            engine_adapter_src.ping()
 
-        config_direct = config.model_copy()
-        runner = PreviewRunner(config_direct, resolve_executor=False)
-        runner.run(callback=set_output, do_validate_connections=False)
+        sink_cfg = config.get_sink()
+        engine_adapter_dest = sink_cfg.create_engine_adapter() if sink_cfg else None
+        if engine_adapter_dest:
+            engine_adapter_dest.ping()
 
-        if not result:
-            raise Exception("Direct preview ran but the callback was not executed or produced no result.")
-        
-        return result
+        for transform_cfg in config.transformation_pipeline:
+            if transform_cfg.name.upper() == "SQL":
+                query = transform_cfg.options.get("query")
+                if query:
+                    if config.executor and config.executor.type_ == "spark":
+                        engine_dialect = Dialects.SPARK
+                    else:
+                        engine_dialect = Dialects.DUCKDB
+                    transformers.sql.SQL.parse_and_validate_query(query, engine_adapter_src, fallback_dialect=engine_dialect, **config.job_properties)
 
-    def _can_run_preview_directly(self, config: Config, schema_only: bool = False) -> bool:
-        if config.executor and config.executor.type_ == "spark":
+        # Run 1-row check
+        config_check = config.model_copy(deep=True)
+        config_check.job_properties["source_limit"] = 1
+        config_check.job_properties["source_batch_size"] = 1
+        config_check.audit_store = None
+
+        runner = PreviewRunner(config_check, resolve_executor=True)
+        if runner.exec_cfg and runner.exec_cfg.type_ == "spark":
             context_manager = SQLContextManager.get_instance()
             status = context_manager.get_spark_status()
             if status != SparkStatus.READY:
@@ -129,17 +157,19 @@ class JobPreviewerBase(ABC):
                         daemon=True,
                         name="PreviewSparkInitThread",
                     ).start()
+                return
+        
+        runner.run(callback=lambda s: None, do_validate_connections=False)
+
+    def _can_run_preview_directly(self, config: Config, schema_only: bool = False) -> bool:
+        if config.executor and config.executor.type_ == "spark":
+            context_manager = SQLContextManager.get_instance()
+            status = context_manager.get_spark_status()
+            if status != SparkStatus.READY:
                 return False
 
         source_cfg = config.get_source()
         engine_adapter_src = source_cfg.create_engine_adapter() if source_cfg else None
-        if engine_adapter_src:
-            engine_adapter_src.ping()
-
-        sink_cfg = config.get_sink()
-        engine_adapter_dest = sink_cfg.create_engine_adapter() if sink_cfg else None
-        if engine_adapter_dest:
-            engine_adapter_dest.ping()
 
         if not schema_only:
             for transform_cfg in config.transformation_pipeline:
@@ -168,6 +198,22 @@ class JobPreviewerBase(ABC):
                             if with_exp.args.get("recursive"):
                                 return False
         return True
+
+    def _run_direct_preview(self, config: Config) -> dict:
+        """Helper to run the PreviewRunner in-process and capture its result."""
+        result = None
+        def set_output(json_string: str):
+            nonlocal result
+            result = json.loads(json_string)
+
+        config_direct = config.model_copy()
+        runner = PreviewRunner(config_direct, resolve_executor=False)
+        runner.run(callback=set_output, do_validate_connections=False)
+
+        if not result:
+            raise Exception("Direct preview ran but the callback was not executed or produced no result.")
+        
+        return result
 
     @abstractmethod
     async def run_disposable_job(self, config: Config, temp_job_name: str) -> DataFetchResponse:
