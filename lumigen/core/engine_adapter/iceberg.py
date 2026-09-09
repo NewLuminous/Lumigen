@@ -273,7 +273,13 @@ class IcebergEngineAdapter(
             for row in df.itertuples()
         ]
     
-    def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None, *args) -> t.List[DataObject]:
+    def get_all_data_objects(
+        self, keyword: str="", limit: t.Optional[int]=None,
+        object_types: t.Optional[t.Collection[t.Union[str, DataObjectType]]] = None, *args,
+    ) -> t.List[DataObject]:
+        if object_types is not None and (not object_types):
+            return []
+        
         keyword = keyword.strip()
         if '.' in keyword:
             schema = keyword.split('.')[0]

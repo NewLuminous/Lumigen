@@ -5,7 +5,7 @@ import typing as t
 from abc import ABC, abstractmethod
 from sqlglot import exp, Dialect
 from sqlmesh.core.engine_adapter.base import EngineAdapter
-from sqlmesh.core.engine_adapter.shared import DataObject
+from sqlmesh.core.engine_adapter.shared import DataObject, DataObjectType
 
 if t.TYPE_CHECKING:
     from core.config.job import DataLoadMode
@@ -130,7 +130,10 @@ class EngineAdapterMixin(EngineAdapter):
         except:
             return column_exp.sql()
 
-    def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None, exclude_unknown: bool=False, *args) -> t.List[DataObject]:
+    def get_all_data_objects(
+        self, keyword: str="", limit: t.Optional[int]=None,
+        object_types: t.Optional[t.Collection[t.Union[str, DataObjectType]]] = None, *args,
+    ) -> t.List[DataObject]:
         raise NotImplementedError()
 
     def _columns_to_types(

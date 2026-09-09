@@ -79,7 +79,10 @@ class MySQLEngineAdapter(
 
         super().execute(expressions, ignore_unsupported_errors, quote_identifiers, track_rows_processed, **kwargs)
 
-    def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None, exclude_unknown: bool=False, *args) -> t.List[DataObject]:
+    def get_all_data_objects(
+        self, keyword: str="", limit: t.Optional[int]=None,
+        object_types: t.Optional[t.Collection[t.Union[str, DataObjectType]]] = None, *args,
+    ) -> t.List[DataObject]:
         keyword = keyword.strip()
         if '.' in keyword:
             schema = keyword.split('.')[0]
@@ -116,10 +119,34 @@ class MySQLEngineAdapter(
             query = query.where(exp.column("table_name").like(table_pattern))
         if schema_pattern:
             query = query.where(exp.column("table_schema").like(schema_pattern))
-        if exclude_unknown:
-            query = query.where(
-                exp.column("table_type").isin("BASE TABLE", "VIEW", "SYSTEM VIEW")
-            )
+
+        if object_types is not None:
+            mysql_type_mapping: t.Dict[DataObjectType, t.List[str]] = {
+                DataObjectType.TABLE: ["BASE TABLE"],
+                DataObjectType.VIEW: ["VIEW", "SYSTEM VIEW"],
+            }
+            all_known_mysql_types = {"BASE TABLE", "VIEW", "SYSTEM VIEW"}
+
+            if not object_types:
+                return []
+            has_unknown = False
+            included_mysql_types = set()
+            for ot in object_types:
+                dot = ot if isinstance(ot, DataObjectType) else DataObjectType.from_str(str(ot).replace(" ", "_"))
+                if dot.is_unknown:
+                    has_unknown = True
+                else:
+                    included_mysql_types.update(mysql_type_mapping.get(dot, []))
+            if has_unknown:
+                excluded_mysql_types = all_known_mysql_types - included_mysql_types
+                if excluded_mysql_types:
+                    query = query.where(exp.column("table_type").isin(*sorted(list(excluded_mysql_types))).not_())
+            else:
+                if not included_mysql_types:
+                    return []
+                if included_mysql_types:
+                    query = query.where(exp.column("table_type").isin(*sorted(list(included_mysql_types))))
+
         if limit is not None:
             query = query.limit(limit)
         df = self.fetchdf(query)

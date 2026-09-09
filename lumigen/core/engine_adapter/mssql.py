@@ -60,7 +60,10 @@ class MSSQLEngineAdapter(
             }
         return target_columns_to_types, source_columns
 
-    def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None, exclude_unknown: bool=False, *args) -> t.List[DataObject]:
+    def get_all_data_objects(
+        self, keyword: str="", limit: t.Optional[int]=None,
+        object_types: t.Optional[t.Collection[t.Union[str, DataObjectType]]] = None, *args,
+    ) -> t.List[DataObject]:
         keyword = keyword.strip()
         if '.' in keyword:
             schema = keyword.split('.')[0]
@@ -87,10 +90,34 @@ class MSSQLEngineAdapter(
             query = query.where(exp.column("TABLE_NAME").like(table_pattern))
         if schema_pattern:
             query = query.where(exp.column("TABLE_SCHEMA").like(schema_pattern))
-        if exclude_unknown:
-            query = query.where(
-                exp.column("TABLE_TYPE").isin("BASE TABLE", "VIEW")
-            )
+
+        if object_types is not None:
+            mssql_type_mapping: t.Dict[DataObjectType, t.List[str]] = {
+                DataObjectType.TABLE: ["BASE TABLE"],
+                DataObjectType.VIEW: ["VIEW"],
+            }
+            all_known_mssql_types = {"BASE TABLE", "VIEW"}
+
+            if not object_types:
+                return []
+            has_unknown = False
+            included_mssql_types = set()
+            for ot in object_types:
+                dot = ot if isinstance(ot, DataObjectType) else DataObjectType.from_str(str(ot).replace(" ", "_"))
+                if dot.is_unknown:
+                    has_unknown = True
+                else:
+                    included_mssql_types.update(mssql_type_mapping.get(dot, []))
+            if has_unknown:
+                excluded_mssql_types = all_known_mssql_types - included_mssql_types
+                if excluded_mssql_types:
+                    query = query.where(exp.column("TABLE_TYPE").isin(*sorted(list(excluded_mssql_types))).not_())
+            else:
+                if not included_mssql_types:
+                    return []
+                if included_mssql_types:
+                    query = query.where(exp.column("TABLE_TYPE").isin(*sorted(list(included_mssql_types))))
+
         if limit is not None:
             query = query.limit(limit)
         dataframe = self.fetchdf(query)

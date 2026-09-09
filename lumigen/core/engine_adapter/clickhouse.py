@@ -86,7 +86,10 @@ class ClickHouseEngineAdapter(
             **kwargs,
         )
 
-    def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None, exclude_unknown: bool=False, *args) -> t.List[DataObject]:
+    def get_all_data_objects(
+        self, keyword: str="", limit: t.Optional[int]=None,
+        object_types: t.Optional[t.Collection[t.Union[str, DataObjectType]]] = None, *args,
+    ) -> t.List[DataObject]:
         keyword = keyword.strip()
         if '.' in keyword:
             schema = keyword.split('.')[0]
@@ -121,11 +124,46 @@ class ClickHouseEngineAdapter(
             query = query.where(exp.column("name").ilike(table_pattern))
         if schema_pattern:
             query = query.where(exp.column("database").ilike(schema_pattern))
-        if exclude_unknown:
-            query = query.where(
-                exp.column("engine").isin("View", "MaterializedView")
-                | (~exp.column("engine").isin("Dictionary", "Buffer"))
-            )
+
+        if object_types is not None:
+            view_engines = {"View", "MaterializedView"}
+            unknown_engines = {"Dictionary", "Buffer"}
+
+            if not object_types:
+                return []
+            has_table = False
+            has_unknown = False
+            included_explicit_engines = set()
+            for ot in object_types:
+                dot = ot if isinstance(ot, DataObjectType) else DataObjectType.from_str(str(ot).replace(" ", "_"))
+                if dot.is_unknown:
+                    has_unknown = True
+                elif dot == DataObjectType.TABLE:
+                    has_table = True
+                elif dot == DataObjectType.VIEW:
+                    included_explicit_engines.add("View")
+                elif dot == DataObjectType.MATERIALIZED_VIEW:
+                    included_explicit_engines.add("MaterializedView")
+
+            if has_table and has_unknown:
+                # Tables + unknown + requested views -> only exclude unrequested views
+                excluded_engines = view_engines - included_explicit_engines
+                if excluded_engines:
+                    query = query.where(exp.column("engine").isin(*sorted(list(excluded_engines))).not_())
+            elif has_table and (not has_unknown):
+                # Tables + requested views -> exclude unrequested views and all unknown engines
+                excluded_engines = (view_engines - included_explicit_engines) | unknown_engines
+                query = query.where(exp.column("engine").isin(*sorted(list(excluded_engines))).not_())
+            elif (not has_table) and has_unknown:
+                # Unknown engines + requested views
+                included_engines = included_explicit_engines | unknown_engines
+                query = query.where(exp.column("engine").isin(*sorted(list(included_engines))))
+            else:
+                # Only explicit views/materialized views
+                if not included_explicit_engines:
+                    return []
+                query = query.where(exp.column("engine").isin(*sorted(list(included_explicit_engines))))
+
         if limit is not None:
             query = query.limit(limit)
         df = self.fetchdf(query)

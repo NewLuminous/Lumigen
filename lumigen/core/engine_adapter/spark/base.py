@@ -125,7 +125,13 @@ class SparkEngineAdapter(
             )
         return data_objects
     
-    def get_all_data_objects(self, keyword: str="", limit: t.Optional[int]=None, exclude_unknown: bool=False, *args) -> t.List[DataObject]:
+    def get_all_data_objects(
+        self, keyword: str="", limit: t.Optional[int]=None,
+        object_types: t.Optional[t.Collection[t.Union[str, DataObjectType]]] = None, *args,
+    ) -> t.List[DataObject]:
+        if object_types is not None and (not object_types):
+            return []
+        
         keyword = keyword.strip()
         if '.' in keyword:
             schema = keyword.split('.')[0]
@@ -136,8 +142,25 @@ class SparkEngineAdapter(
             table_pattern = f"*{keyword}*" if keyword else '*'
 
         data_objects = self._get_data_objects(schema, {table_pattern})
-        if exclude_unknown:
-            data_objects = [obj for obj in data_objects if not obj.type.is_unknown]
+
+        if object_types is not None:
+            has_unknown = False
+            included_types = set()
+            for ot in object_types:
+                dot = ot if isinstance(ot, DataObjectType) else DataObjectType.from_str(str(ot).replace(" ", "_"))
+                if dot.is_unknown:
+                    has_unknown = True
+                else:
+                    included_types.add(dot)
+            if has_unknown:
+                all_known_types = {dt for dt in DataObjectType if not dt.is_unknown}
+                excluded_types = all_known_types - included_types
+                data_objects = [obj for obj in data_objects if obj.type not in excluded_types]
+            else:
+                if not included_types:
+                    return []
+                data_objects = [obj for obj in data_objects if obj.type in included_types]
+
         if limit is not None:
             data_objects = data_objects[:limit]
         return data_objects
