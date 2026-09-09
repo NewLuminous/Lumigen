@@ -137,7 +137,7 @@ class JobPreviewerBase(ABC):
                         engine_dialect = Dialects.SPARK
                     else:
                         engine_dialect = Dialects.DUCKDB
-                    transformers.sql.SQL.parse_and_validate_query(query, engine_adapter_src, fallback_dialect=engine_dialect, **config.job_properties)
+                    transformers.sql.SQL.parse_and_validate_query(query, engine_adapter_src, engine_dialect=engine_dialect, **config.job_properties)
 
         # Run 1-row check
         config_check = config.model_copy(deep=True)
@@ -182,7 +182,7 @@ class JobPreviewerBase(ABC):
                         engine_dialect = Dialects.SPARK
                     else:
                         engine_dialect = Dialects.DUCKDB
-                    select_exp = transformers.sql.SQL.parse_and_validate_query(query, engine_adapter_src, fallback_dialect=engine_dialect, **config.job_properties)
+                    select_exp = transformers.sql.SQL.parse_and_validate_query(query, engine_adapter_src, engine_dialect=engine_dialect, **config.job_properties)
                     if select_exp.find(exp.Join):
                         return False
                     if engine_dialect == Dialects.DUCKDB:

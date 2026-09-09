@@ -69,7 +69,7 @@ class PreviewRunner:
                     engine_dialect = Dialects.SPARK
                 else:
                     engine_dialect = Dialects.DUCKDB
-                select_exp = transformers.sql.SQL.parse_and_validate_query(query, temp_src_adapter, fallback_dialect=engine_dialect, **self.config.job_properties)
+                select_exp = transformers.sql.SQL.parse_and_validate_query(query, temp_src_adapter, engine_dialect=engine_dialect, **self.config.job_properties)
                 # Find all custom function calls
                 for func_exp in select_exp.find_all(exp.Anonymous):
                     func_name = func_exp.this

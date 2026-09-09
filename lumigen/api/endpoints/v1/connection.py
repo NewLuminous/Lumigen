@@ -42,7 +42,12 @@ async def list_data_objects(conn_config: t.Dict[str, t.Any],
     conn = await loop.run_in_executor(executor, parse_connection, conn_config)
     engine_adapter = t.cast("EngineAdapterMixin", conn.create_engine_adapter())
     try:
-        data_objects = await loop.run_in_executor(executor, engine_adapter.get_all_data_objects, keyword, limit, True)
+        if type == DataObjectType.TABLE:
+            data_objects = await loop.run_in_executor(executor, engine_adapter.get_all_data_objects, keyword, limit, {"table", "managed_table"})
+        elif type == DataObjectType.VIEW:
+            data_objects = await loop.run_in_executor(executor, engine_adapter.get_all_data_objects, keyword, limit, {"view", "materialized_view"})
+        else:
+            data_objects = await loop.run_in_executor(executor, engine_adapter.get_all_data_objects, keyword, limit, {"table", "managed_table", "view", "materialized_view"})
     except Exception as e:
         logger.error(f"Error fetching data objects: {e}")
         return []
