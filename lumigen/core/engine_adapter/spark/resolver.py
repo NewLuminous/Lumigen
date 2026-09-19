@@ -35,6 +35,10 @@ class SparkAdapterResolver(AdapterResolver):
         for configurator in self.CONFIGURATORS:
             adapter = configurator.configure(self.executor_config, external_db_config)
             if adapter:
+                # `adapter.dialect` is the runtime execution/SQL-generation dialect (e.g., 'spark').
+                # `adapter.DIALECT` identifies the underlying external source system (e.g., 'postgres', 'oracle')
+                # used for auditing, state tracking, and source-level metadata validation.
+                adapter.DIALECT = external_db_config.create_engine_adapter().dialect or adapter.DIALECT
                 return adapter
             
         return None

@@ -12,7 +12,7 @@ if t.TYPE_CHECKING:
     from sqlmesh.core.engine_adapter._typing import DF, Query, QueryOrDF
 
 from core.dialect import select_from_values_for_batch_range
-from utils.dataset import columns_to_types_from_df
+from utils.dataset import columns_to_types_from_df, empty_pandas_df
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +165,41 @@ class EngineAdapterMixin(EngineAdapter):
             alias=alias,
             source_columns=source_columns,
         )
+
+    def _fetch_native_df(
+        self, query: t.Union[exp.Expression, str], quote_identifiers: bool = False
+    ) -> DF:
+        import pandas as pd
+        
+        df = super()._fetch_native_df(query, quote_identifiers=quote_identifiers)
+        if isinstance(df, pd.DataFrame) and len(df.columns) == 0:
+            description = getattr(self.cursor, "description", None)
+            if not description:
+                with self.transaction():
+                    self.execute(query, quote_identifiers=quote_identifiers)
+                    description = getattr(self.cursor, "description", None)
+
+            if description:
+                df_columns_to_types: t.Dict[str, exp.DataType] = {}
+                for col in description:
+                    col_name = str(col[0]) if col[0] is not None else ""
+                    raw_type = col[1]
+                    try:
+                        if raw_type is not None:
+                            df_columns_to_types[col_name] = exp.DataType.build(
+                                str(raw_type), dialect=self.dialect, udt=True,
+                            )
+                        else:
+                            df_columns_to_types[col_name] = exp.DataType.build(exp.DataType.Type.TEXT)
+                    except Exception as err:
+                        logger.debug(f"Could not parse type '{raw_type}' for column '{col_name}': {err}. Defaulting to TEXT.")
+                        df_columns_to_types[col_name] = exp.DataType.build(exp.DataType.Type.TEXT)
+
+                try:
+                    return empty_pandas_df(df_columns_to_types)
+                except:
+                    return pd.DataFrame(columns=list(df_columns_to_types.keys()))
+        return df
     
 class QueryBuilderMixin(ABC):
     """

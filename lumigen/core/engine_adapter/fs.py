@@ -141,7 +141,11 @@ class FileSystemEngineAdapter(
             raise NotImplementedError("The underlying connection does not support checking file existence.") from ae
     
     def _truncate_table(self, file_path: str) -> None:
-        raise EngineAdapterError("Unsupported TRUNCATE operation for File sinks.")
+        request = json.dumps({
+            "operation": "remove",
+            "file_path": file_path,
+        })
+        self.execute(request)
     
     def get_all_data_objects(
         self, keyword: str="", limit: t.Optional[int]=None,

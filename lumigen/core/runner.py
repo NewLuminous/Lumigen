@@ -72,7 +72,7 @@ class JobRunner(ABC):
             base_query = context.build_source_expression()
             if job_props.data_load_mode == DataLoadMode.INCREMENTAL:
                 if isinstance(base_query, str):
-                    base_query: exp.Select = parse_into_select_exp(base_query, read=reader.dialect)
+                    base_query: exp.Select = parse_into_select_exp(base_query, dialect=reader.dialect)
 
                 if not job_props.source_watermark:
                     raise ValueError(f"`source_watermark` must be provided when `data_load_mode` is '{DataLoadMode.INCREMENTAL}'.")

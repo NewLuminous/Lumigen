@@ -125,7 +125,7 @@ class SparkJDBCEngineAdapter(SparkEngineAdapter):
         if where is None or not self.table_exists(table_name):
             self.replace_query(table_name, df, target_columns_to_types, **kwargs)
         else:
-            self.delegate_adapter.delete_from(table_name, where)
+            self.delete_from(table_name, where)
             self.insert_append(table_name, df, target_columns_to_types)
             
     def merge(
@@ -215,6 +215,12 @@ class SparkJDBCEngineAdapter(SparkEngineAdapter):
 
     def table_exists(self, table_name: TableName) -> bool:
         return self.delegate_adapter.table_exists(table_name)
+
+    def delete_from(self, table_name: TableName, where: t.Union[str, exp.Expression]) -> None:
+        self.delegate_adapter.delete_from(table_name, where)
+
+    def _truncate_table(self, table_name: TableName) -> None:
+        self.delegate_adapter._truncate_table(table_name)
     
     def _flatten_complex_types(self, df: pyspark.sql.DataFrame) -> pyspark.sql.DataFrame:
         """

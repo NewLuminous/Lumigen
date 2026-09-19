@@ -184,7 +184,7 @@ class AuditManager:
             # ==================================================================
             # RULE 2: Source Type (dialect) MUST NOT change. This is a critical error.
             # ==================================================================
-            current_source_dialect = job_context_for_validation.source_adapter.dialect
+            current_source_dialect = job_context_for_validation.source_adapter.DIALECT
             if prev_source_type and prev_source_type != current_source_dialect:
                 error_msg = (
                     f"Critical configuration change detected for incremental job '{job_id}'. "
@@ -253,7 +253,7 @@ class AuditManager:
             return
 
         job_props = job_context.job_props_model
-        source_dialect = job_context.source_adapter.dialect
+        source_dialect = job_context.source_adapter.DIALECT
         
         try:
             watermark_string, watermark_type_string = encode_typed_value(new_watermark_value)

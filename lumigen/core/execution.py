@@ -109,10 +109,6 @@ def write_data(dataset, t_chain: TransformationPipeline, context: JobContext):
 
 def _process_dataset_loop(dataset, t_chain: TransformationPipeline, context: JobContext):
     for df in dataset:
-        if is_batch_or_stream_empty(df):
-            logger.warning("An empty DataFrame was encountered and will be skipped.")
-            continue
-
         t_chain.apply(df)
 
 def _find_first_foreachbatch_options(
@@ -136,15 +132,26 @@ class MicroBatchWriter:
 
     def replace_query(self, table_name, df, *args, **kwargs):
         if self.batch_id == 0:
-            self.base.replace_query(table_name, df, self.get_columns_to_types(df, table_name), *args, **kwargs)
+            if not is_batch_or_stream_empty(df):
+                self.base.replace_query(table_name, df, self.get_columns_to_types(df, table_name), *args, **kwargs)
+            elif self.base.table_exists(table_name):
+                self.base._truncate_table(table_name)
         else:
-            self.base.insert_append(table_name, df, self.get_columns_to_types(df, table_name), *args)
+            if not is_batch_or_stream_empty(df):
+                self.base.insert_append(table_name, df, self.get_columns_to_types(df, table_name), *args)
+
         self.batch_id += 1
 
     def insert_append(self, table_name, df, *args, **kwargs):
+        if is_batch_or_stream_empty(df):
+            return
+
         self.base.insert_append(table_name, df, self.get_columns_to_types(df, table_name), *args, **kwargs)
 
     def merge(self, target_table, df, key, when_matched_filter=None, *args, **kwargs):
+        if is_batch_or_stream_empty(df):
+            return
+
         unique_key = [exp.column(k) for k in key]
         if when_matched_filter:
             columns_to_types = self.base._columns_to_types(df)

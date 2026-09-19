@@ -442,6 +442,65 @@ def columns_to_types_from_df(df: DataFrameType) -> t.Dict[str, exp.DataType]:
 
     return result
 
+def to_pandas_dtype(data_type: exp.DataType | exp.DATA_TYPE) -> str:
+    """
+    Deterministically maps any SQLGlot DataType to a standard Pandas/NumPy dtype string.
+    """
+    dtype = exp.DataType.build(data_type) if not isinstance(data_type, exp.DataType) else data_type
+    t: exp.DataType.Type = dtype.this
+
+    if t in (exp.DataType.Type.BOOLEAN, exp.DataType.Type.BIT):
+        return "bool"
+
+    if t in exp.DataType.SIGNED_INTEGER_TYPES or t in (
+        exp.DataType.Type.SERIAL,
+        exp.DataType.Type.SMALLSERIAL,
+        exp.DataType.Type.BIGSERIAL,
+    ):
+        int_width_map = {
+            "tinyint": "int8",
+            "smallint": "int16",
+            "smallserial": "int16",
+            "int": "int32",
+            "mediumint": "int32",
+            "serial": "int32",
+        }
+        return int_width_map.get(t.value, "int64")
+
+    if t in exp.DataType.UNSIGNED_INTEGER_TYPES:
+        uint_width_map = {
+            "utinyint": "uint8",
+            "usmallint": "uint16",
+            "uint": "uint32",
+            "umediumint": "uint32",
+        }
+        return uint_width_map.get(t.value, "uint64")
+
+    if t in exp.DataType.REAL_TYPES:
+        return "float32" if t == exp.DataType.Type.FLOAT else "float64"
+
+    # Pure Time-of-day (TIME, TIMETZ, TIME_NS) has no native NumPy date type, so it remains 'object'
+    if t in (exp.DataType.Type.TIME, exp.DataType.Type.TIMETZ, getattr(exp.DataType.Type, "TIME_NS", None)):
+        return "object"
+
+    if t in (exp.DataType.Type.TIMESTAMPTZ, exp.DataType.Type.TIMESTAMPLTZ):
+        return "datetime64[ns, UTC]"
+
+    if t in exp.DataType.TEMPORAL_TYPES:
+        return "datetime64[ns]"
+
+    if t == exp.DataType.Type.INTERVAL:
+        return "timedelta64[ns]"
+
+    # Fallback for Strings, Binary, JSON, Arrays, Structs, Maps, Objects, etc.
+    return "object"
+
+def empty_pandas_df(schema: t.Dict[str, exp.DataType | exp.DATA_TYPE]) -> pd.DataFrame:
+    return pd.DataFrame({
+        col: pd.Series(dtype=to_pandas_dtype(dtype))
+        for col, dtype in schema.items()
+    })
+
 def needs_conversion(old_dtype: exp.DATA_TYPE, new_dtype: exp.DATA_TYPE):
     old_dtype = exp.DataType.build(old_dtype)
     new_dtype = exp.DataType.build(new_dtype)
