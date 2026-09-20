@@ -14,13 +14,17 @@ from engines.fs.handlers.base import BaseFileHandler
 class TextFileHandler(BaseFileHandler):
     DEFAULT_CHUNK_SIZE = 100_000  # number of lines 
     COLUMN_NAME = "value"
+    SUPPORTED_COMPRESSION_CODECS = {"gzip", "bz2", "xz", "zstd"}
 
     def read(self, fs: AbstractFileSystem, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> t.Iterator[pd.DataFrame]:
         """
         Reads raw text files line-by-line
         """
         row_delim = options.row_delimiter if (options and options.row_delimiter) else '\n'
-        with fs.open(file_path, "rt", encoding="utf-8", errors="replace", newline="") as f:
+        encoding = options.encoding if (options and options.encoding) else "utf-8"
+        compression = self._resolve_compression(file_path, options, self.SUPPORTED_COMPRESSION_CODECS)
+
+        with fs.open(file_path, "rt", encoding=encoding, compression=compression, errors="replace", newline="") as f:
             while True:
                 lines = list(islice(f, self.DEFAULT_CHUNK_SIZE))
                 if not lines:
@@ -40,6 +44,8 @@ class TextFileHandler(BaseFileHandler):
         
         row_delim = options.row_delimiter if (options and options.row_delimiter) else '\n'
         col_delim = options.field_delimiter if (options and options.field_delimiter) else ','
+        encoding = options.encoding if (options and options.encoding) else "utf-8"
+        compression = self._resolve_compression(write_path, options, self.SUPPORTED_COMPRESSION_CODECS)
 
         if clean_df.empty:
             content = ""
@@ -49,8 +55,8 @@ class TextFileHandler(BaseFileHandler):
             # If multiple non-metadata columns exist, join fields using col_delim
             content = clean_df.astype(str).apply(lambda row: col_delim.join(row), axis=1).str.cat(sep=row_delim) + row_delim
 
-        with fs.open(write_path, "wb") as f:
-            f.write(content.encode("utf-8"))
+        with fs.open(write_path, "wb", compression=compression) as f:
+            f.write(content.encode(encoding))
 
         return clean_df
 
@@ -59,22 +65,25 @@ class TextFileHandler(BaseFileHandler):
         
         row_delim = options.row_delimiter if (options and options.row_delimiter) else "\n"
         col_delim = options.field_delimiter if (options and options.field_delimiter) else ","
+        encoding = options.encoding if (options and options.encoding) else "utf-8"
+        read_compression = self._resolve_compression(read_path, options, self.SUPPORTED_COMPRESSION_CODECS)
+        write_compression = self._resolve_compression(write_path, options, self.SUPPORTED_COMPRESSION_CODECS)
 
         if len(clean_df.columns) == 1:
             new_text = row_delim.join(clean_df.iloc[:, 0].astype(str)) + row_delim
         else:
             new_text = clean_df.astype(str).apply(lambda row: col_delim.join(row), axis=1).str.cat(sep=row_delim) + row_delim
 
-        with io.BytesIO() as file_buffer:
-            try:
-                with fs.open(read_path, "rb") as f:
-                    file_buffer.write(f.read())
-            except (FileNotFoundError, OSError):
-                pass
-            file_buffer.write(new_text.encode("utf-8"))
+        file_buffer = io.BytesIO()
+        try:
+            with fs.open(read_path, "rb", compression=read_compression) as f:
+                file_buffer.write(f.read())
+        except (FileNotFoundError, OSError):
+            pass
+        file_buffer.write(new_text.encode(encoding))
 
-            file_buffer.seek(0)
-            with fs.open(write_path, "wb") as f:
-                f.write(file_buffer.read())
+        file_buffer.seek(0)
+        with fs.open(write_path, "wb", compression=write_compression) as f:
+            f.write(file_buffer.read())
 
         return clean_df

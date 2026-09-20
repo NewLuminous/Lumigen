@@ -12,6 +12,8 @@ from engines.fs.handlers.base import BaseFileHandler
 
 
 class ORCFileHandler(BaseFileHandler):
+    SUPPORTED_COMPRESSION_CODECS = {"uncompressed", "snappy", "zlib", "lz4", "zstd"}
+
     def read(
         self, 
         fs: AbstractFileSystem, 
@@ -60,9 +62,12 @@ class ORCFileHandler(BaseFileHandler):
     ) -> pd.DataFrame:
         clean_df = self._drop_metadata_columns(df, metadata_prefix)
 
+        compression = self._resolve_compression(write_path, options, self.SUPPORTED_COMPRESSION_CODECS)
+        compression_arg = compression.upper() if compression else "UNCOMPRESSED"
+
         table = pa.Table.from_pandas(clean_df, preserve_index=False)
         with fs.open(write_path, "wb") as f:
-            orc.write_table(table, f)
+            orc.write_table(table, f, compression=compression_arg)
 
         return clean_df
 
@@ -77,6 +82,9 @@ class ORCFileHandler(BaseFileHandler):
     ) -> pd.DataFrame:
         new_df = self._drop_metadata_columns(df, metadata_prefix)
         new_table = pa.Table.from_pandas(new_df, preserve_index=False)
+
+        compression = self._resolve_compression(write_path, options, self.SUPPORTED_COMPRESSION_CODECS)
+        compression_arg = compression.upper() if compression else "UNCOMPRESSED"
 
         # Read existing ORC dataset safely
         try:
@@ -98,6 +106,6 @@ class ORCFileHandler(BaseFileHandler):
             combined_table = new_table
 
         with fs.open(write_path, "wb") as f:
-            orc.write_table(combined_table, f)
+            orc.write_table(combined_table, f, compression=compression_arg)
 
         return new_df

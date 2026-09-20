@@ -785,10 +785,16 @@ class KafkaConnectionConfig(ConnectionConfig):
 
 
 class FileOptions(BaseModel):
-    row_delimiter: str = Field(default="\n")
-    field_delimiter: str = Field(default=",")
+    row_delimiter: str = Field(default='\n')
+    field_delimiter: str = Field(default=',')
     header: bool = Field(default=True, description="Controls whether the first row is treated as column names.")
-    
+    encoding: str = Field(
+        default='utf-8', 
+        description="Character encoding of the file (e.g., 'utf-8', 'latin1', 'iso-8859-1', 'cp1252', 'utf-16')."
+    )
+
+    csv_quote_char: str = Field(default='"')
+    csv_comment_char: t.Optional[str] = Field(default=None, description="Single character used to identify and skip comment lines.")
     excel_skip_rows: int = Field(default=0, description="The number of rows from the beginning of the file that should be ignored.")
 
     @model_validator(mode="before")

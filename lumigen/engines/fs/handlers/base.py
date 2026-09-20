@@ -140,6 +140,56 @@ class BaseFileHandler(ABC):
         except (FileNotFoundError, OSError):
             pass
 
+    @staticmethod
+    def _resolve_compression(
+        file_path: str = "", 
+        options: t.Optional[FileOptions] = None, 
+        supported_codecs: t.Optional[t.Collection[str]] = None
+    ) -> t.Optional[str]:
+        """
+        Universal compression resolver for Pandas/fsspec file handlers.
+        Resolves aliases and auto-detects compression from the file extension.
+        """
+        COMPRESSION_MAP: t.Dict[str, str] = {
+            "none": "none", "uncompressed": "none",
+            "gzip": "gzip", "gz": "gzip",
+            "bz2": "bz2", "bzip2": "bz2",
+            "zip": "zip",
+            "xz": "xz", "lzma": "xz",
+            "zstd": "zstd", "zst": "zstd",
+            "tar": "tar",
+            "snappy": "snappy",
+            "brotli": "brotli", "br": "brotli",
+            "lz4": "lz4",
+            "deflate": "deflate",
+        }
+
+        resolved_codec: t.Optional[str] = None
+
+        if options and options.compression_codec and options.compression_codec.strip().lower() != "infer":
+            codec_key = options.compression_codec.strip().lower()
+            if codec_key not in COMPRESSION_MAP:
+                raise ValueError(f"Unknown compression codec '{options.compression_codec}'.")
+            resolved_codec = COMPRESSION_MAP[codec_key]
+        elif file_path:
+            lower_path = file_path.lower()
+            for ext, codec in COMPRESSION_MAP.items():
+                if ext != "none" and lower_path.endswith(f".{ext}"):
+                    resolved_codec = codec
+                    break
+
+        if resolved_codec in ("none", "uncompressed"):
+            return None
+
+        if resolved_codec and supported_codecs and resolved_codec not in supported_codecs:
+            allowed = ", ".join(sorted(supported_codecs))
+            raise ValueError(
+                f"Compression codec '{resolved_codec}' is not supported for this file format. "
+                f"Supported codecs: {allowed}"
+            )
+
+        return resolved_codec
+
 
 class FileHandlerFactory:
     """

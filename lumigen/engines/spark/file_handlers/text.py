@@ -10,6 +10,8 @@ from engines.spark.file_handlers.base import BaseSparkFileHandler
 
 
 class SparkTextFileHandler(BaseSparkFileHandler):
+    SUPPORTED_COMPRESSION_CODECS = {"none", "bzip2", "gzip", "lz4", "snappy", "deflate"}
+
     def _read_hadoop_fs(
         self, spark: SparkSession, files: t.Dict[str, t.Dict[str, t.Any]], consolidated_paths: t.List[str], request: FileRequest, metadata_prefix: str,
         fs_conn: t.Optional[FileSystemConnection] = None
@@ -36,17 +38,19 @@ class SparkTextFileHandler(BaseSparkFileHandler):
         prepared_df = self._align_text_columns(df, options, metadata_prefix)
         return self._write_native_format(spark, "text", prepared_df, file_path, "append", options, metadata_prefix, fs_conn)
 
-    def _configure_reader(self, reader: DataFrameReader, options: t.Optional[FileOptions]) -> DataFrameReader:
+    def _configure_reader(self, reader: DataFrameReader, options: t.Optional[FileOptions], consolidated_paths: t.List[str]) -> DataFrameReader:
         if options and options.row_delimiter:
             reader = reader.option("lineSep", options.row_delimiter)
         return reader
 
-    def _configure_writer(self, writer: DataFrameWriter, options: t.Optional[FileOptions]) -> DataFrameWriter:
+    def _configure_writer(self, writer: DataFrameWriter, options: t.Optional[FileOptions], file_path: str) -> DataFrameWriter:
         if options:
             if options.row_delimiter:
                 writer = writer.option("lineSep", options.row_delimiter)
-            if options.compression_codec:
-                writer = writer.option("compression", options.compression_codec)
+
+            compression = self._resolve_compression(options, file_path, self.SUPPORTED_COMPRESSION_CODECS)
+            if compression:
+                writer = writer.option("compression", compression)
         return writer
 
     def _align_text_columns(self, df: DataFrame, options: t.Optional[FileOptions], metadata_prefix: str) -> DataFrame:

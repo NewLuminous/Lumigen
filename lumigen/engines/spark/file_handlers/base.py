@@ -140,10 +140,10 @@ class BaseSparkFileHandler(ABC):
         else:
             reader = reader.option("mergeSchema", "true")
 
-        reader = self._configure_reader(reader, request.options)
+        reader = self._configure_reader(reader, request.options, consolidated_paths)
         return reader.load(consolidated_paths)
 
-    def _configure_reader(self, reader: DataFrameReader, options: t.Optional[FileOptions]) -> DataFrameReader:
+    def _configure_reader(self, reader: DataFrameReader, options: t.Optional[FileOptions], consolidated_paths: t.List[str]) -> DataFrameReader:
         """
         Hook for subclasses to configure the PySpark DataFrameReader builder by chaining any options, schemas, or custom configurations.
         """
@@ -289,11 +289,11 @@ class BaseSparkFileHandler(ABC):
         clean_df = self._drop_metadata_columns(df, metadata_prefix)
 
         writer = clean_df.write.format(format_name).mode(mode)
-        writer = self._configure_writer(writer, options)
+        writer = self._configure_writer(writer, options, file_path)
         writer.save(file_path)
         return clean_df
 
-    def _configure_writer(self, writer: DataFrameWriter, options: t.Optional[FileOptions]) -> DataFrameWriter:
+    def _configure_writer(self, writer: DataFrameWriter, options: t.Optional[FileOptions], file_path: str) -> DataFrameWriter:
         """
         Hook for subclasses to configure the PySpark DataFrameWriter builder by chaining any options.
         """
@@ -465,6 +465,55 @@ class BaseSparkFileHandler(ABC):
             f"{metadata_prefix}file_modification_time TIMESTAMP"
         )
         return spark.createDataFrame([], schema=schema_str)
+
+    @staticmethod
+    def _resolve_compression(
+        options: t.Optional[FileOptions] = None, 
+        file_path: str = "", 
+        supported_codecs: t.Optional[t.Collection[str]] = None
+    ) -> t.Optional[str]:
+        """
+        Universal compression resolver for PySpark file handlers.
+        Maps common aliases to canonical Spark compression codec names.
+        """
+        SPARK_COMPRESSION_MAP: t.Dict[str, str] = {
+            "none": "none", "uncompressed": "none",
+            "gzip": "gzip", "gz": "gzip",
+            "bzip2": "bzip2", "bz2": "bzip2",
+            "deflate": "deflate",
+            "snappy": "snappy",
+            "lz4": "lz4",
+            "zstd": "zstd", "zst": "zstd",
+            "lzo": "lzo",
+            "zlib": "zlib",
+            "brotli": "brotli",
+        }
+
+        resolved_codec: t.Optional[str] = None
+
+        if options and options.compression_codec and options.compression_codec.strip().lower() != "infer":
+            codec_key = options.compression_codec.strip().lower()
+            if codec_key not in SPARK_COMPRESSION_MAP:
+                raise ValueError(f"Unknown compression codec '{options.compression_codec}'.")
+            resolved_codec = SPARK_COMPRESSION_MAP[codec_key]
+        elif file_path:
+            lower_path = file_path.lower()
+            for ext, codec in SPARK_COMPRESSION_MAP.items():
+                if ext != "none" and lower_path.endswith(f".{ext}"):
+                    resolved_codec = codec
+                    break
+
+        if resolved_codec in ("none", "uncompressed"):
+            return None
+
+        if resolved_codec and supported_codecs and resolved_codec not in supported_codecs:
+            allowed = ", ".join(sorted(supported_codecs))
+            raise ValueError(
+                f"Compression codec '{resolved_codec}' is not supported by Spark for this format. "
+                f"Supported codecs: {allowed}"
+            )
+
+        return resolved_codec
 
 
 class SparkFileHandlerFactory:
