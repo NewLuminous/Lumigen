@@ -18,7 +18,7 @@ class JobStatusWatcher:
     """
     def __init__(self, max_retries: int = 3):
         self.subscribers: t.Dict[str, t.Set[asyncio.Queue]] = defaultdict(set)
-        self._last_status: t.Dict[str, JobStatus] = {}
+        self._last_job_info: t.Dict[str, JobInfoResponse] = {}
         self._unknowable_counts: t.Dict[str, int] = defaultdict(int)
         
         self.max_retries = max_retries
@@ -53,6 +53,11 @@ class JobStatusWatcher:
     async def subscribe(self, job_id: str) -> asyncio.Queue:
         q = asyncio.Queue()
         self.subscribers[job_id].add(q)
+
+        # Immediately feed the current known state to the new client
+        if job_id in self._last_job_info:
+            q.put_nowait(self._last_job_info[job_id])
+
         return q
 
     def unsubscribe(self, job_id: str, q: asyncio.Queue):
@@ -60,7 +65,7 @@ class JobStatusWatcher:
             self.subscribers[job_id].discard(q)
             if not self.subscribers[job_id]:
                 del self.subscribers[job_id]
-                self._last_status.pop(job_id, None)
+                self._last_job_info.pop(job_id, None)
                 self._unknowable_counts.pop(job_id, None)
 
     async def _poll_loop(self):
@@ -80,7 +85,8 @@ class JobStatusWatcher:
                 
                 for job_id, job_info in batch_results.items():
                     current_status = job_info.status
-                    last_status = self._last_status.get(job_id)
+                    last_info = self._last_job_info.get(job_id)
+                    last_status = last_info.status if last_info else None
 
                     # Debounce transient UNKNOWABLE states
                     if current_status == JobStatus.UNKNOWABLE:
@@ -92,7 +98,7 @@ class JobStatusWatcher:
 
                     is_valid = True if last_status is None else last_status.is_valid_transition_to(current_status)
                     if is_valid:
-                        self._last_status[job_id] = current_status
+                        self._last_job_info[job_id] = job_info
                         
                         # Route the update to all clients watching this job
                         for q in self.subscribers.get(job_id, []):
