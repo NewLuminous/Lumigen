@@ -99,8 +99,8 @@ class IcebergCursor:
 
     def _flush_table_to_wap(self, table_name: str) -> None:
         """Flushes in-memory staged operations to the Iceberg WAP branch to prevent OOM."""
-        state = self._txn_states[table_name]
-        if not state.ops_queue:
+        state = self._txn_states.get(table_name)
+        if not state or not state.ops_queue:
             return
             
         logger.debug(f"Flushing {state.queued_memory_bytes} bytes for {table_name} to WAP branch.")
@@ -119,18 +119,13 @@ class IcebergCursor:
         # Write to the branch (or main if branching failed on empty table)
         branch_kwarg = {"branch": self.txn_id} if state.wap_branch_created else {}
         
-        try:
-            for op in state.ops_queue:
-                if op.action == DMLOperation.APPEND:
-                    iceberg_tbl.append(op.data, **branch_kwarg)
-                elif op.action == DMLOperation.OVERWRITE:
-                    iceberg_tbl.overwrite(op.data, overwrite_filter=op.overwrite_filter, **branch_kwarg)
-                elif op.action == DMLOperation.TRUNCATE:
-                    iceberg_tbl.overwrite(self._get_empty_arrow_table(iceberg_tbl), overwrite_filter=op.overwrite_filter, **branch_kwarg)
-        except Exception as e:
-            logger.error(f"Error during mid-transaction flush for {table_name}. Initiating compensating rollback.", exc_info=e)
-            self._perform_compensating_rollback()
-            raise
+        for op in state.ops_queue:
+            if op.action == DMLOperation.APPEND:
+                iceberg_tbl.append(op.data, **branch_kwarg)
+            elif op.action == DMLOperation.OVERWRITE:
+                iceberg_tbl.overwrite(op.data, overwrite_filter=op.overwrite_filter, **branch_kwarg)
+            elif op.action == DMLOperation.TRUNCATE:
+                iceberg_tbl.overwrite(self._get_empty_arrow_table(iceberg_tbl), overwrite_filter=op.overwrite_filter, **branch_kwarg)
         
         state.ops_queue.clear()
 
@@ -167,6 +162,9 @@ class IcebergCursor:
 
     def _perform_compensating_rollback(self) -> None:
         """Gracefully removes temporary WAP branches to ensure the Data Lake remains clean on failure."""
+        if (not self._is_in_transaction) and (not self._txn_states):
+            return
+
         logger.debug(f"Rolling back WAP transaction {self.txn_id}.")
         for table_name, state in self._txn_states.items():
             if state.wap_branch_created:
@@ -419,9 +417,12 @@ class IcebergCursor:
         if not parsed_exps:
             return None
         
-        for parsed_exp in parsed_exps:
-            if parsed_exp is not None:
-                self._execute_single(parsed_exp.sql(dialect=self.dialect), df=df, **kwargs)
+        if len(parsed_exps) == 1:
+            self._execute_single(query, df=df, **kwargs)
+        else:
+            for parsed_exp in parsed_exps:
+                if parsed_exp is not None:
+                    self._execute_single(parsed_exp.sql(dialect=self.dialect), df=df, **kwargs)
     
     def _execute_single(self, query: str, df: t.Optional[DataFrame] = None, **kwargs) -> None:
         self._clear_cursor_state()
@@ -462,178 +463,183 @@ class IcebergCursor:
             self.begin()
             is_auto_commit = True
         
-        # DDL operations
-        reader = None
-        is_ddl = True
-        if isinstance(parsed_exp, exp.Create):
-            inferred_schema = None
-            if is_ctas:
-                if isinstance(parsed_exp.expression, exp.Select):
-                    self._execute_select(parsed_exp.expression)
-                    reader = t.cast("DuckDBPyConnection", self._last_df).to_arrow_reader(self.BATCH_SIZE)
-                    pa_schema = reader.schema
-                elif df is not None:
-                    pa_schema = pa_schema = pa.Table.from_pandas(df).schema
-
-                if pa_schema:
-                    raw_schema = _pyarrow_to_schema_without_ids(pa_schema)
-                    inferred_schema = assign_fresh_schema_ids(raw_schema)
-
-            create_meta = IcebergSQLParser.parse_create_table(parsed_exp, self.dialect, inferred_schema=inferred_schema)
-            namespace_tuple = self._catalog.namespace_from(create_meta.table_name)
-            if namespace_tuple and not self._catalog.namespace_exists(namespace_tuple):
-                namespace_str = self._catalog.namespace_to_string(namespace_tuple)
-                raise NoSuchNamespaceError(
-                    f"Cannot create table '{create_meta.table_name}'. "
-                    f"Namespace '{namespace_str}' does not exist."
-                )
-            
-            # CREATE OR REPLACE TABLE
-            if parsed_exp.args.get("replace"):
-                target_table = IcebergSQLParser.extract_table_name(parsed_exp, self.dialect)
-                try:
-                    self._catalog.drop_table(target_table)
-                except NoSuchTableError:
-                    pass
-            if create_meta.if_not_exists:
-                self._catalog.create_table_if_not_exists(
-                    create_meta.table_name,
-                    create_meta.schema,
-                    location=create_meta.location,
-                    partition_spec=create_meta.partition_spec,
-                    properties=create_meta.properties,
-                )
-            else:
-                self._catalog.create_table(
-                    create_meta.table_name,
-                    create_meta.schema,
-                    location=create_meta.location,
-                    partition_spec=create_meta.partition_spec,
-                    properties=create_meta.properties,
-                )
-        elif isinstance(parsed_exp, exp.Drop):
-            self._execute_drop(parsed_exp)
-        elif isinstance(parsed_exp, exp.Alter) or (isinstance(parsed_exp, exp.Command) and str(parsed_exp.this).upper() == "ALTER"):
-            self._execute_alter(query)
-        else:
-            is_ddl = False
-        
-        # DML operations
-        if is_dml:
-            target_table = IcebergSQLParser.extract_table_name(parsed_exp, self.dialect)
-            
-            # Setup Transaction State Tracking for this table
-            if target_table not in self._txn_states:
-                iceberg_tbl = self._load_table(target_table)
-                curr = iceberg_tbl.current_snapshot()
-                self._txn_states[target_table] = TableTxnState(
-                    table_name=target_table,
-                    initial_snapshot_id=curr.snapshot_id if curr else None
-                )
-            state = self._txn_states[target_table]
-
-            if isinstance(parsed_exp, (exp.Insert, exp.Create)):
-                iceberg_tbl = self._load_table(target_table)
-                overwrite_filter = ALWAYS_TRUE
-
-                if isinstance(parsed_exp, exp.Create):
-                    # CREATE OR REPLACE TABLE ...
-                    is_overwrite = is_ctas or parsed_exp.args.get("replace")
-                else:
-                    # INSERT OVERWRITE ...
-                    is_overwrite = bool(parsed_exp.args.get("overwrite"))
-                    if is_overwrite:
-                        # Static overwrite: INSERT OVERWRITE ... PARTITION ...
-                        partition_exp = parsed_exp.args.get("partition") or t.cast("exp.Table", parsed_exp.this).find(exp.Partition)
-                        if partition_exp and partition_exp.expressions:
-                            overwrite_filter = exp.and_(*partition_exp.expressions).sql(self.dialect)
-
-                # INSERT ... SELECT ...
-                if isinstance(parsed_exp.expression, exp.Select):
-                    if reader is None:
+        try:
+            # DDL operations
+            reader = None
+            is_ddl = True
+            if isinstance(parsed_exp, exp.Create):
+                inferred_schema = None
+                if is_ctas:
+                    if isinstance(parsed_exp.expression, exp.Select):
                         self._execute_select(parsed_exp.expression)
                         reader = t.cast("DuckDBPyConnection", self._last_df).to_arrow_reader(self.BATCH_SIZE)
+                        pa_schema = reader.schema
+                    elif df is not None:
+                        pa_schema = pa.Table.from_pandas(df).schema
 
-                    first_chunk = True
-                    has_data = False
-                    for batch in reader:
-                        has_data = True
-                        chunk_pa_df = pa.Table.from_batches([batch])
-                        if first_chunk:
-                            self._validate_table_and_schema(target_table, chunk_pa_df, is_positional_insert=True)
-                        aligned_chunk = self._align_arrow_table_to_schema(chunk_pa_df, iceberg_tbl, is_positional_insert=True)
+                    if pa_schema:
+                        raw_schema = _pyarrow_to_schema_without_ids(pa_schema)
+                        inferred_schema = assign_fresh_schema_ids(raw_schema)
 
-                        if is_overwrite and first_chunk:
-                            current_action = DMLOperation.OVERWRITE
-                            current_filter = overwrite_filter
-                        else:
-                            current_action = DMLOperation.APPEND
-                            current_filter = ALWAYS_TRUE
+                create_meta = IcebergSQLParser.parse_create_table(parsed_exp, self.dialect, inferred_schema=inferred_schema)
+                namespace_tuple = self._catalog.namespace_from(create_meta.table_name)
+                if namespace_tuple and not self._catalog.namespace_exists(namespace_tuple):
+                    namespace_str = self._catalog.namespace_to_string(namespace_tuple)
+                    raise NoSuchNamespaceError(
+                        f"Cannot create table '{create_meta.table_name}'. "
+                        f"Namespace '{namespace_str}' does not exist."
+                    )
+                
+                # CREATE OR REPLACE TABLE
+                if parsed_exp.args.get("replace"):
+                    target_table = IcebergSQLParser.extract_table_name(parsed_exp, self.dialect)
+                    try:
+                        self._catalog.drop_table(target_table)
+                    except NoSuchTableError:
+                        pass
+                if create_meta.if_not_exists:
+                    self._catalog.create_table_if_not_exists(
+                        create_meta.table_name,
+                        create_meta.schema,
+                        location=create_meta.location,
+                        partition_spec=create_meta.partition_spec,
+                        properties=create_meta.properties,
+                    )
+                else:
+                    self._catalog.create_table(
+                        create_meta.table_name,
+                        create_meta.schema,
+                        location=create_meta.location,
+                        partition_spec=create_meta.partition_spec,
+                        properties=create_meta.properties,
+                    )
+            elif isinstance(parsed_exp, exp.Drop):
+                self._execute_drop(parsed_exp)
+            elif isinstance(parsed_exp, exp.Alter) or (isinstance(parsed_exp, exp.Command) and str(parsed_exp.this).upper() == "ALTER"):
+                self._execute_alter(query)
+            else:
+                is_ddl = False
+            
+            # DML operations
+            if is_dml:
+                target_table = IcebergSQLParser.extract_table_name(parsed_exp, self.dialect)
+                
+                # Setup Transaction State Tracking for this table
+                if target_table not in self._txn_states:
+                    iceberg_tbl = self._load_table(target_table)
+                    curr = iceberg_tbl.current_snapshot()
+                    self._txn_states[target_table] = TableTxnState(
+                        table_name=target_table,
+                        initial_snapshot_id=curr.snapshot_id if curr else None
+                    )
+                state = self._txn_states[target_table]
+
+                if isinstance(parsed_exp, (exp.Insert, exp.Create)):
+                    iceberg_tbl = self._load_table(target_table)
+                    overwrite_filter = ALWAYS_TRUE
+
+                    if isinstance(parsed_exp, exp.Create):
+                        # CREATE OR REPLACE TABLE ...
+                        is_overwrite = is_ctas or parsed_exp.args.get("replace")
+                    else:
+                        # INSERT OVERWRITE ...
+                        is_overwrite = bool(parsed_exp.args.get("overwrite"))
+                        if is_overwrite:
+                            # Static overwrite: INSERT OVERWRITE ... PARTITION ...
+                            partition_exp = parsed_exp.args.get("partition") or t.cast("exp.Table", parsed_exp.this).find(exp.Partition)
+                            if partition_exp and partition_exp.expressions:
+                                overwrite_filter = exp.and_(*partition_exp.expressions).sql(self.dialect)
+
+                    # INSERT ... SELECT ...
+                    if isinstance(parsed_exp.expression, exp.Select):
+                        if reader is None:
+                            self._execute_select(parsed_exp.expression)
+                            reader = t.cast("DuckDBPyConnection", self._last_df).to_arrow_reader(self.BATCH_SIZE)
+
+                        first_chunk = True
+                        has_data = False
+                        for batch in reader:
+                            has_data = True
+                            chunk_pa_df = pa.Table.from_batches([batch])
+                            if first_chunk:
+                                self._validate_table_and_schema(target_table, chunk_pa_df, is_positional_insert=True)
+                            aligned_chunk = self._align_arrow_table_to_schema(chunk_pa_df, iceberg_tbl, is_positional_insert=True)
+
+                            if is_overwrite and first_chunk:
+                                current_action = DMLOperation.OVERWRITE
+                                current_filter = overwrite_filter
+                            else:
+                                current_action = DMLOperation.APPEND
+                                current_filter = ALWAYS_TRUE
+                            state.ops_queue.append(StagedOperation(
+                                action=current_action,
+                                table=target_table,
+                                data=aligned_chunk,
+                                overwrite_filter=current_filter,
+                            ))
+                            first_chunk = False
+
+                            # Trigger WAP Flush if Memory Exceeds Threshold
+                            if state.queued_memory_bytes >= self.flush_threshold_bytes:
+                                self._flush_table_to_wap(target_table)
+
+                        if is_overwrite and not has_data:
+                            state.ops_queue.append(StagedOperation(
+                                action=DMLOperation.TRUNCATE,
+                                table=target_table,
+                                overwrite_filter=overwrite_filter,
+                            ))
+
+                        # Clear the SELECT result from the cursor state
+                        self._clear_cursor_state()
+                    else:
+                        if df is None:
+                            raise ValueError("DataFrame must be provided for INSERT statements without a SELECT clause")
+                    
+                        pa_df = pa.Table.from_pandas(df)
+                        self._validate_table_and_schema(target_table, pa_df)
+                        aligned_pa_df = self._align_arrow_table_to_schema(pa_df, iceberg_tbl)
+                        action = DMLOperation.OVERWRITE if is_overwrite else DMLOperation.APPEND
                         state.ops_queue.append(StagedOperation(
-                            action=current_action,
+                            action=action,
                             table=target_table,
-                            data=aligned_chunk,
-                            overwrite_filter=current_filter,
+                            data=aligned_pa_df,
+                            overwrite_filter=overwrite_filter if action == DMLOperation.OVERWRITE else ALWAYS_TRUE
                         ))
-                        first_chunk = False
 
-                        # Trigger WAP Flush if Memory Exceeds Threshold
                         if state.queued_memory_bytes >= self.flush_threshold_bytes:
                             self._flush_table_to_wap(target_table)
-
-                    if is_overwrite and not has_data:
-                        state.ops_queue.append(StagedOperation(
-                            action=DMLOperation.TRUNCATE,
-                            table=target_table,
-                            overwrite_filter=overwrite_filter,
-                        ))
-
-                    # Clear the SELECT result from the cursor state
-                    self._clear_cursor_state()
-                else:
-                    if df is None:
-                        raise ValueError("DataFrame must be provided for INSERT statements without a SELECT clause")
                 
-                    pa_df = pa.Table.from_pandas(df)
-                    self._validate_table_and_schema(target_table, pa_df)
-                    aligned_pa_df = self._align_arrow_table_to_schema(pa_df, iceberg_tbl)
-                    action = DMLOperation.OVERWRITE if is_overwrite else DMLOperation.APPEND
-                    state.ops_queue.append(StagedOperation(
-                        action=action,
-                        table=target_table,
-                        data=aligned_pa_df,
-                        overwrite_filter=overwrite_filter if action == DMLOperation.OVERWRITE else ALWAYS_TRUE
-                    ))
-
-                    if state.queued_memory_bytes >= self.flush_threshold_bytes:
-                        self._flush_table_to_wap(target_table)
+                # UPDATE
+                elif isinstance(parsed_exp, exp.Update):
+                    self._execute_update(parsed_exp)
+                # DELETE
+                elif isinstance(parsed_exp, exp.Delete):
+                    self._execute_delete(parsed_exp)
+                # TRUNCATE TABLE
+                elif isinstance(parsed_exp, exp.TruncateTable):
+                    self._validate_table_and_schema(target_table)
+                    state.ops_queue.append(StagedOperation(action=DMLOperation.TRUNCATE, table=target_table))
+                # MERGE INTO
+                elif isinstance(parsed_exp, exp.Merge):
+                    self._execute_merge(parsed_exp, df=df)
+                else:
+                    raise ValueError(f"Unsupported SQL statement of type: '{type(parsed_exp).__name__.upper()}'")
+            # DQL operation
+            elif isinstance(parsed_exp, exp.Select):
+                self._execute_select(parsed_exp)
+            elif not is_ddl:
+                if not isinstance(parsed_exp, exp.Command):
+                    raise ValueError(f"Unsupported SQL statement of type: '{type(parsed_exp).__name__.upper()}'")
+                else:
+                    raise ValueError(f"Unsupported SQL statement: {query}")
             
-            # UPDATE
-            elif isinstance(parsed_exp, exp.Update):
-                self._execute_update(parsed_exp)
-            # DELETE
-            elif isinstance(parsed_exp, exp.Delete):
-                self._execute_delete(parsed_exp)
-            # TRUNCATE TABLE
-            elif isinstance(parsed_exp, exp.TruncateTable):
-                self._validate_table_and_schema(target_table)
-                state.ops_queue.append(StagedOperation(action=DMLOperation.TRUNCATE, table=target_table))
-            # MERGE INTO
-            elif isinstance(parsed_exp, exp.Merge):
-                self._execute_merge(parsed_exp, df=df)
-            else:
-                raise ValueError(f"Unsupported SQL statement of type: '{type(parsed_exp).__name__.upper()}'")
-        # DQL operation
-        elif isinstance(parsed_exp, exp.Select):
-            self._execute_select(parsed_exp)
-        elif not is_ddl:
-            if not isinstance(parsed_exp, exp.Command):
-                raise ValueError(f"Unsupported SQL statement of type: '{type(parsed_exp).__name__.upper()}'")
-            else:
-                raise ValueError(f"Unsupported SQL statement: {query}")
-        
-        if is_auto_commit:
-            self.commit()
+            if is_auto_commit:
+                self.commit()
+        except Exception:
+            if is_auto_commit:
+                self.rollback()
+            raise
 
     def _execute_drop(self, drop_exp: exp.Drop) -> None:
         target_table = IcebergSQLParser.extract_table_name(drop_exp, self.dialect, lowercase=False)
@@ -1003,6 +1009,12 @@ class IcebergCursor:
         if not join_cols:
             # Find explicit row-level identifier (like Primary Key)
             join_cols = [iceberg_tbl.schema().find_column_name(fid) for fid in iceberg_tbl.schema().identifier_field_ids]
+
+        if not join_cols:
+            raise ValueError(
+                f"Cannot execute MERGE INTO '{target_table}'. "
+                f"Target table has no Primary Key identifier fields, and no simple equality join keys (e.g. 't.id = s.id') were found in the ON clause."
+            )
             
         if df is None:
             source_query = exp.select("*").from_(source_node.copy())
@@ -1016,6 +1028,7 @@ class IcebergCursor:
             source_node = sub_tbl
             source_df = pa.Table.from_pandas(df)
             self._duckdb_conn.register(temp_table, source_df)
+            self._registered_tables.add(temp_table)
 
         match_filter = upsert_util.create_match_filter(source_df, join_cols)
         register_kwargs = {}

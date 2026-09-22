@@ -1,6 +1,6 @@
 from __future__ import annotations
 import typing as t
-from pyiceberg.io import S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY
+from pyiceberg.io import S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, PY_IO_IMPL, FSSPEC_FILE_IO
 from pyiceberg.catalog.rest import RestCatalog as BaseRestCatalog
 from pyiceberg.catalog.rest import CREDENTIAL
 from pyiceberg.exceptions import (
@@ -26,6 +26,9 @@ DUMMY_BOOTSTRAP_SCHEMA = Schema(
 
 class RestCatalog(BaseRestCatalog):
     def __init__(self, name: str, **properties: str):
+        # Default to FsspecFileIO for REST catalog
+        properties.setdefault(PY_IO_IMPL, FSSPEC_FILE_IO)
+
         s3_access_key = properties.get(S3_ACCESS_KEY_ID)
         s3_secret_key = properties.get(S3_SECRET_ACCESS_KEY)
         if s3_access_key and s3_secret_key and not properties.get(CREDENTIAL):
