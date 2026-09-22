@@ -103,7 +103,8 @@ class JobContextBuilder:
 
         audit_manager = None
         if self.config.audit_store:
-            audit_adapter = t.cast("ConnectionConfig", self.config.audit_store).create_engine_adapter()
+            # Force 1 single connection for audit tasks
+            audit_adapter = t.cast("ConnectionConfig", self.config.audit_store).create_engine_adapter(concurrent_tasks=1)
             try:
                 audit_manager = AuditManager(audit_adapter=audit_adapter)
             except Exception as e:

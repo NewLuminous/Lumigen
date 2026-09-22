@@ -106,6 +106,10 @@ class WatermarkTracker(ForeachBatch):
             if is_spark:
                 df.unpersist()
 
+            # Release the audit connection so that no connections are held between batches.
+            if self.audit_manager and self.audit_manager.adapter:
+                self.audit_manager.adapter.close()
+
 def _calculate_max_watermark(df, watermark_field: str) -> t.Any:
     if is_batch_or_stream_empty(df):
         return None

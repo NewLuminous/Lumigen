@@ -1,6 +1,7 @@
 from __future__ import annotations
 import typing as t
 import logging
+from functools import wraps
 from sqlglot import exp
 import pandas as pd
 
@@ -15,6 +16,25 @@ from utils.errors import ConfigError
 
 logger = logging.getLogger(__name__)
 
+
+def _auto_close_connection(func: t.Callable) -> t.Callable:
+    """
+    Guarantees the adapter connection is closed immediately after execution.
+    Apply to:
+      - All standalone read/get methods (e.g., `get_*`, `fetch_*`), 
+        or self-contained write methods that are NEVER called inside an external transaction.
+
+    Do NOT apply to:
+      - Any method intended to participate in a caller-managed transaction (e.g., `with adapter.transaction():`), 
+        Calling `close()` inside an open transaction closes the socket before commit, forcing PostgreSQL to roll back the transaction.
+    """
+    @wraps(func)
+    def wrapper(self: "AuditManager", *args: t.Any, **kwargs: t.Any) -> t.Any:
+        try:
+            return func(self, *args, **kwargs)
+        finally:
+            self.adapter.close()
+    return wrapper
 
 class AuditManager:
     """
@@ -42,6 +62,7 @@ class AuditManager:
     def __init__(self, audit_adapter: EngineAdapter):
         self.adapter = audit_adapter
         self._ensure_all_tables_exist()
+        self.adapter.close()
 
     # ===================================================================
     # Setup and Initialization
@@ -110,6 +131,7 @@ class AuditManager:
     #
     # This entire block will be moved to `StateManager` later.
     # ===================================================================
+    @_auto_close_connection
     def get_validated_high_watermark(self, job_context: JobContext, silent: t.Optional[bool] = False) -> t.Optional[t.Any]:
         """
         Retrieves the high watermark for a job and validates the current job
@@ -121,6 +143,7 @@ class AuditManager:
             silent=silent,
         )
 
+    @_auto_close_connection
     def get_high_watermark_by_id(self, job_id: str) -> t.Optional[t.Any]:
         """
         Retrieves a job's high watermark by its ID without performing any
