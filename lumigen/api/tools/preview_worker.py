@@ -28,7 +28,7 @@ from core.job_context import JobContext, JobContextBuilder
 import transformers
 from utils import SQLIdentifierSet
 from utils.json import DisplayableJSONEncoder
-from utils.dataset import DataFrameConverter, columns_to_types_from_df
+from utils.dataset import DataFrameConverter, columns_to_types_from_df, get_columns_name
 from utils.sql import dialect_insensitive_tbl_name
 
 
@@ -95,13 +95,26 @@ class PreviewRunner:
             lazy_dataset = self._read_data(job_context)
             trans_chain = transform_data(self.config.transformation_pipeline, job_context)
             if not self.config.sink:
-                logger.info("No sink configured. Will preview transformed source data.")
+                logger.debug("No sink configured. Will preview transformed source data.")
                 trans_chain.add(partial(self._run_data_preview, job_context, callback))
             else:
-                logger.info("Sink configured. Will generate a schema diff.")
+                logger.debug("Sink configured. Will generate a schema diff.")
                 trans_chain.add(partial(self._run_schema_diff, job_context, callback))
 
             for df in lazy_dataset:
+                if not get_columns_name(df): # no column
+                    source_target = (
+                        job_context.job_props_model.get_source_path()
+                        or job_context.job_props_model.source_query
+                        or "the configured data source"
+                    )
+                    raise RuntimeError(
+                        f"Failed to read input data from '{source_target}'. "
+                        "The source data stream or response payload was incomplete, truncated, or corrupted, preventing schema discovery. "
+                        "Please verify that the source data is fully written, "
+                        "the connection is stable, and the source endpoint/file is intact."
+                    )
+
                 trans_chain.apply(df)
 
         return 0

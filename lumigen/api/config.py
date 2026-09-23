@@ -58,6 +58,8 @@ class Settings(BaseSettings):
     CHECKPOINT_DIR: str = Field(default="/tmp/spark-ckpts",
                                 description="The directory for Spark checkpoint data.")
     PREVIEW_JOB_CONCURRENCY_LIMIT: int = 10
+    PREVIEW_PREFLIGHT_TIMEOUT_SECONDS: float = 15.0
+    PREVIEW_DIRECT_TIMEOUT_SECONDS: float = 60.0
 
     # Job settings
     JOB_MANAGER_TYPE: str = "docker"  # Can be "docker" or "kubernetes"
