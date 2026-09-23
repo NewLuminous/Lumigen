@@ -13,6 +13,7 @@ from s3fs import S3FileSystem
 import threading
 import queue
 from concurrent.futures import ThreadPoolExecutor
+import zipfile
 
 if t.TYPE_CHECKING:
     from fsspec import AbstractFileSystem
@@ -20,6 +21,17 @@ if t.TYPE_CHECKING:
 from engines.fs.request_parser import FileRequest, FileRequestParser, FileOperationType, FileOptions, RequestParseError
 from engines.fs.handlers import FileHandlerFactory
 from utils.dataset import columns_to_types_from_df
+
+try:
+    import xlrd
+    XLRD_ERRORS = (xlrd.biffh.XLRDError,)
+except ImportError:
+    XLRD_ERRORS = ()
+FILE_READ_ERRORS = (
+    OSError,               # Storage, network, permission (403), missing file (404)
+    ValueError,            # Parsing errors (ParserError, EmptyDataError, ArrowInvalid)
+    zipfile.BadZipFile,    # Corrupted Excel/ZIP archives
+) + XLRD_ERRORS
 
 logger = logging.getLogger(__name__)
 
@@ -325,7 +337,7 @@ class FileSystemCursor:
                     if res is not None:
                         df_list.append(res)
                 except Exception as e:
-                    if ignore_corrupt:
+                    if ignore_corrupt and isinstance(e, FILE_READ_ERRORS):
                         logger.warning(f"Ignored corrupted/unreadable file schema for '{path}': {e}")
                     else:
                         logger.error(f"Failed to inspect schema for file: '{path}'")
@@ -482,7 +494,7 @@ class FileSystemCursor:
                     else:
                         exc, err_path = payload, "unknown"
 
-                    if ignore_corrupt:
+                    if ignore_corrupt and isinstance(exc, FILE_READ_ERRORS):
                         logger.warning(f"Ignored unreadable file '{err_path}' during streaming: {exc}")
                     else:
                         raise exc

@@ -3,6 +3,11 @@ import typing as t
 import logging
 import os
 from collections import defaultdict
+from py4j.protocol import Py4JJavaError
+try:
+    from pyspark.errors import PySparkException # type: ignore
+except ImportError:
+    from pyspark.sql.utils import AnalysisException as PySparkException
 
 if t.TYPE_CHECKING:
     from pyspark.sql import DataFrame, SparkSession
@@ -111,11 +116,16 @@ class SparkFileSystemCursor(SparkStreamToBatchCursor):
                 )
             
             handler_func = getattr(handler, operation_name)
-            group_df = handler_func(
-                self._spark, group_files, request, self._fs_cursor.METADATA_COLUMN_PREFIX,
-                self.fs_type, fs_conn=self._fs_conn
-            )
-            dfs.append(group_df)
+            try:
+                group_df = handler_func(
+                    self._spark, group_files, request, self._fs_cursor.METADATA_COLUMN_PREFIX,
+                    self.fs_type, fs_conn=self._fs_conn
+                )
+                dfs.append(group_df)
+            except (Py4JJavaError, PySparkException, OSError) as e:
+                if not (request.options and request.options.ignore_corrupt_files):
+                    raise
+                logger.warning(f"Ignored unreadable files for extension '{ext}': {e}")
 
         if not dfs:
             return None
