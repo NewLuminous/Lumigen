@@ -310,24 +310,34 @@ class FileSystemCursor:
         Quickly scans the headers/metadata of all matched files in parallel and merges them to determine the global, unified schema.
         Returns the combined DataFrame, retaining the rows for downstream schema inference.
         """
-        df_list = []
+        ignore_corrupt = parsed_request.options.ignore_corrupt_files if parsed_request.options else False
+
+        df_list: t.List[pd.DataFrame] = []
         with ThreadPoolExecutor(max_workers=parsed_request.concurrency) as executor:
-            futures = [
-                executor.submit(self._describe_single_file, path, info, parsed_request.options) 
+            futures = {
+                executor.submit(self._describe_single_file, path, info, parsed_request.options): path
                 for path, info in files.items()
-            ]
+            }
             for future in futures:
+                path = futures[future]
                 try:
                     res = future.result()
                     if res is not None:
                         df_list.append(res)
                 except Exception as e:
-                    logger.warning(f"Error reading schema for file in thread: {e}")
+                    if ignore_corrupt:
+                        logger.warning(f"Ignored corrupted/unreadable file schema for '{path}': {e}")
+                    else:
+                        logger.error(f"Failed to inspect schema for file: '{path}'")
+                        raise e
 
-        if not df_list:
+        valid_dfs = [df for df in df_list if not df.empty and not df.isna().all().all()]
+        if not valid_dfs:
+            valid_dfs = [df for df in df_list if not df.empty]
+        if not valid_dfs:
             return pd.DataFrame()
             
-        combined_df: pd.DataFrame = pd.concat(df_list, ignore_index=True)
+        combined_df: pd.DataFrame = pd.concat(valid_dfs, ignore_index=True)
         return combined_df
 
     def execute(self, request: str, payload: t.Optional[t.Any] = None, **kwargs) -> None:
@@ -423,6 +433,7 @@ class FileSystemCursor:
             raise NotImplementedError(f"Operation {parsed_request.operation} is not implemented.")
 
     def _generate_read_chunks(self, files: t.Dict[str, t.Dict[str, t.Any]], parsed_request: FileRequest, unified_schema_df: t.Optional[pd.DataFrame] = None) -> t.Iterator[pd.DataFrame]:
+        ignore_corrupt = parsed_request.options.ignore_corrupt_files if parsed_request.options else False
         # Bounding the queue forces background threads to pause reading if the consumer gets too slow.
         chunk_queue = queue.Queue(maxsize=parsed_request.concurrency * 2)
         master_columns = list(unified_schema_df.columns) if unified_schema_df is not None else None
@@ -447,7 +458,7 @@ class FileSystemCursor:
                         except queue.Full:
                             continue
             except Exception as e:
-                chunk_queue.put(("error", e))
+                chunk_queue.put(("error", (e, path)))
 
         def manager():
             with ThreadPoolExecutor(max_workers=parsed_request.concurrency) as executor:
@@ -456,7 +467,7 @@ class FileSystemCursor:
                     try:
                         f.result()
                     except Exception as e:
-                        chunk_queue.put(("error", e))
+                        chunk_queue.put(("error", (e, "manager")))
             chunk_queue.put(("done", None))
 
         threading.Thread(target=manager, daemon=True).start()
@@ -466,7 +477,15 @@ class FileSystemCursor:
                 if msg_type == "done":
                     break
                 elif msg_type == "error":
-                    raise payload
+                    if isinstance(payload, tuple) and len(payload) == 2:
+                        exc, err_path = payload
+                    else:
+                        exc, err_path = payload, "unknown"
+
+                    if ignore_corrupt:
+                        logger.warning(f"Ignored unreadable file '{err_path}' during streaming: {exc}")
+                    else:
+                        raise exc
                 elif msg_type == "data":
                     yield payload
         finally:
@@ -600,7 +619,7 @@ class FileSystemCursor:
     @property
     def description(self) -> t.Optional[t.List[t.Tuple]]:
         if self._last_df is None:
-            return None
+            return []
         
         return list((col_name, str(col_type), None, None, None, None, True) for col_name, col_type in zip(self._last_df.columns, self._last_df.dtypes))
     

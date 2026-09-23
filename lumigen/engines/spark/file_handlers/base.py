@@ -117,10 +117,11 @@ class BaseSparkFileHandler(ABC):
         if file_count == 0:
             return self.create_empty_metadata_df(spark, metadata_prefix)
 
+        ignore_corrupt_str = "true" if (request.options and request.options.ignore_corrupt_files) else "false"
         reader = (
             spark.read.format(format_name)
-            .option("ignoreCorruptFiles", "true")
-            .option("ignoreMissingFiles", "true")
+            .option("ignoreCorruptFiles", ignore_corrupt_str)
+            .option("ignoreMissingFiles", ignore_corrupt_str)
         )
 
         # Driver-Side Schema Inference Heuristic

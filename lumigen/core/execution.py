@@ -109,6 +109,10 @@ def write_data(dataset, t_chain: TransformationPipeline, context: JobContext):
 
 def _process_dataset_loop(dataset, t_chain: TransformationPipeline, context: JobContext):
     for df in dataset:
+        if not get_columns_name(df): # no column
+            logger.warning("Encountered a DataFrame with no columns (empty schema); skipping processing.")
+            continue
+
         t_chain.apply(df)
 
 def _find_first_foreachbatch_options(

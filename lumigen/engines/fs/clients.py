@@ -113,6 +113,19 @@ class S3Connection(FileSystemConnection):
             key = self.s3_access_key_id or self.client_config.get("aws_access_key_id")
             secret = self.s3_secret_access_key or self.client_config.get("aws_secret_access_key")
             anon = not key or not secret
+
+            client_kwargs = dict(self.client_config)
+            if self.endpoint_url:
+                client_kwargs.setdefault("endpoint_url", self.endpoint_url)
+
+            # Enforce path-style access and socket resilience for SeaweedFS/MinIO
+            config_kwargs: t.Dict = client_kwargs.pop("config_kwargs", {})
+            config_kwargs.setdefault("max_pool_connections", 50)
+            config_kwargs.setdefault("connect_timeout", 60)
+            config_kwargs.setdefault("read_timeout", 60)
+            config_kwargs.setdefault("retries", {"max_attempts": 5, "mode": "adaptive"})
+            config_kwargs.setdefault("s3", {"addressing_style": "path"})
+
             self._fs = S3FileSystem(
                 endpoint_url=self.endpoint_url,
                 key=self.s3_access_key_id,
@@ -120,7 +133,9 @@ class S3Connection(FileSystemConnection):
                 anon=anon,
                 use_listings_cache=False,
                 version_aware=False,
-                client_kwargs=self.client_config,
+                default_cache_type="readahead",  # Avoids erratic micro-range requests
+                client_kwargs=client_kwargs,
+                config_kwargs=config_kwargs,
             )
 
         return self._fs

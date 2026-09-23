@@ -792,6 +792,10 @@ class FileOptions(BaseModel):
         default='utf-8', 
         description="Character encoding of the file (e.g., 'utf-8', 'latin1', 'iso-8859-1', 'cp1252', 'utf-16')."
     )
+    ignore_corrupt_files: bool = Field(
+        default=False,
+        description="Whether to ignore corrupted/unreadable files and continue processing. If False (default), any error throws an exception."
+    )
 
     csv_quote_char: str = Field(default='"')
     csv_comment_char: t.Optional[str] = Field(default=None, description="Single character used to identify and skip comment lines.")

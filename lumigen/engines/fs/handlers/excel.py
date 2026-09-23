@@ -40,12 +40,15 @@ class ExcelFileHandler(BaseFileHandler):
 
         read_params = self._get_read_params(options)
 
-        with fs.open(file_path, "rb") as f:
-            sheets_dict = pd.read_excel(f, sheet_name=None, engine=engine, **read_params)
-            for sheet_name, sheet_df in sheets_dict.items():
-                sheet_df[metadata_prefix + "excel_sheet_name"] = sheet_name
-                sheet_df[metadata_prefix + "file_row_number"] = range(1, len(sheet_df) + 1)
-                yield sheet_df
+        # Download via single sequential GET request (bypasses fragile HTTP Range requests)
+        raw_bytes = fs.read_bytes(file_path)
+        file_bytes = io.BytesIO(raw_bytes)
+
+        sheets_dict: t.Dict[str, pd.DataFrame] = pd.read_excel(file_bytes, sheet_name=None, engine=engine, **read_params)
+        for sheet_name, sheet_df in sheets_dict.items():
+            sheet_df[metadata_prefix + "excel_sheet_name"] = sheet_name
+            sheet_df[metadata_prefix + "file_row_number"] = range(1, len(sheet_df) + 1)
+            yield sheet_df
 
     def describe(self, fs: AbstractFileSystem, file_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> t.Optional[pd.DataFrame]:
         _, file_ext = os.path.splitext(file_path.lower())
@@ -74,12 +77,15 @@ class ExcelFileHandler(BaseFileHandler):
         # Use nrows=1 to extract only one row without reading full data
         read_params["nrows"] = 1
 
-        with fs.open(file_path, "rb") as f:
-            sheets_dict = pd.read_excel(f, sheet_name=None, engine=engine, **read_params)
-            for sheet_name, sheet_df in sheets_dict.items():
-                sheet_df[metadata_prefix + "excel_sheet_name"] = sheet_name
-                sheet_df[metadata_prefix + "file_row_number"] = range(1, len(sheet_df) + 1)
-            return pd.concat(sheets_dict.values(), ignore_index=True)
+        # Download via single sequential GET request
+        raw_bytes = fs.read_bytes(file_path)
+        file_bytes = io.BytesIO(raw_bytes)
+
+        sheets_dict: t.Dict[str, pd.DataFrame] = pd.read_excel(file_bytes, sheet_name=None, engine=engine, **read_params)
+        for sheet_name, sheet_df in sheets_dict.items():
+            sheet_df[metadata_prefix + "excel_sheet_name"] = sheet_name
+            sheet_df[metadata_prefix + "file_row_number"] = range(1, len(sheet_df) + 1)
+        return pd.concat(sheets_dict.values(), ignore_index=True)
 
     def _write_impl(self, fs: AbstractFileSystem, df: pd.DataFrame, write_path: str, options: t.Optional[FileOptions], metadata_prefix: str) -> pd.DataFrame:
         clean_df = self._drop_metadata_columns(df, metadata_prefix)
