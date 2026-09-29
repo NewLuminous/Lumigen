@@ -25,6 +25,7 @@ if t.TYPE_CHECKING:
     from pyiceberg.expressions import BooleanExpression
     from duckdb import DuckDBPyConnection
 
+from engines.iceberg.dialect import Iceberg
 from engines.iceberg.catalog import load_catalog
 from engines.iceberg.parser import IcebergSQLParser
 from utils.decorators import TimeoutProxy
@@ -32,6 +33,7 @@ from utils.sql import TablePushdownExtractor
 from utils.collections import SQLIdentifierSet
 
 logger = logging.getLogger(__name__)
+logging.getLogger("pyiceberg").setLevel(logging.WARNING)
 
 
 class DMLOperation(Enum):
@@ -62,7 +64,7 @@ class IcebergCursor:
 
     def __init__(self, catalog: Catalog, flush_threshold_bytes: int):
         self._catalog = catalog
-        self.dialect = Dialects.DATABRICKS # also supported by DataFusion
+        self.dialect = Iceberg
         self._duckdb_conn = duckdb.connect()
 
         self._is_in_transaction: bool = False

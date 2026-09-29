@@ -96,7 +96,7 @@ class Config(BaseConfig):
         """
         if self.source:
             if self.source.type_ == "kafka":
-                self.job_properties["source_watermark"] = "offsets"
+                self.job_properties["source_watermark"] = "offset"
         return self
     
     @model_validator(mode='after')

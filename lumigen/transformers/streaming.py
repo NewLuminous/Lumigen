@@ -44,7 +44,7 @@ class ForeachBatch(AbstractTransformerDecorator):
         self.kwargs = kwargs
         if not isinstance(df, pyspark.sql.DataFrame):
             # For non-Spark DataFrames, just run the function once as a batch.
-            return foreach_batch_func(df, batch_id=0)
+            return foreach_batch_func(df, batch_id=-1)
         
         if not df.isStreaming:
             # For non-streaming Spark DataFrames, run once as a batch.

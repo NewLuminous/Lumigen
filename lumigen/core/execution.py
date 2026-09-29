@@ -2,6 +2,7 @@ from __future__ import annotations
 import typing as t
 from collections import OrderedDict
 import logging
+import pandas as pd
 from sqlglot import exp
 from sqlmesh.core.engine_adapter.base import (
     EngineAdapter, MERGE_SOURCE_ALIAS, MERGE_TARGET_ALIAS
@@ -97,23 +98,63 @@ def write_data(dataset, t_chain: TransformationPipeline, context: JobContext):
         with context.sink_adapter.transaction():
             if audit_manager:
                 with audit_manager.adapter.transaction():
-                    _process_dataset_loop(dataset, t_chain, context)
+                    _process_dataset_loop(dataset, t_chain, writer, context)
             else:
-                _process_dataset_loop(dataset, t_chain, context)
+                _process_dataset_loop(dataset, t_chain, writer, context)
     else:
         # For all other modes, process data batch-by-batch:
         # - INCREMENTAL loads require per-batch commits to safely update state.
         # - STREAMING loads (both FULL and INCREMENTAL) are unbounded and must
         #   be processed as discrete micro-batches.
-        _process_dataset_loop(dataset, t_chain, context)
+        _process_dataset_loop(dataset, t_chain, writer, context)
 
-def _process_dataset_loop(dataset, t_chain: TransformationPipeline, context: JobContext):
-    for df in dataset:
+def _process_dataset_loop(
+    dataset,
+    t_chain: TransformationPipeline,
+    writer: MicroBatchWriter,
+    context: JobContext,
+):
+    job_mode = context.job_props_model.job_mode
+    batch_size = context.job_props_model.source_batch_size
+    is_streaming = (job_mode == JobMode.STREAMING)
+    should_log_info = (not is_streaming) or (batch_size is not None and batch_size > 1)
+    writer.should_log_info = should_log_info
+    if is_streaming:
+        if not should_log_info:
+            logger.info(
+                "Streaming job running with unbuffered micro-batches (`source_batch_size` <= 1 or not set). "
+                "Demoting per-batch read/write logs to DEBUG level to prevent log flooding."
+            )
+        else:
+            logger.info(
+                f"Streaming job configured with `source_batch_size` = {batch_size:,}. "
+                "Per-batch read/write logs will be logged at INFO level."
+            )
+    
+    total_input_rows = 0
+    batch_count = 0
+    for batch_idx, df in enumerate(dataset, start=1):
+        batch_count = batch_idx
         if not get_columns_name(df): # no column
-            logger.warning("Encountered a DataFrame with no columns (empty schema); skipping processing.")
+            logger.warning(f"Batch {batch_idx}: Encountered DataFrame with no columns; skipping.")
             continue
 
+        if isinstance(df, pd.DataFrame):
+            count = len(df)
+            total_input_rows += count
+            msg = f"Batch {batch_idx}: Read {count:,} rows from source."
+            if should_log_info:
+                logger.info(msg)
+            else:
+                logger.debug(msg)
+
         t_chain.apply(df)
+
+    if batch_count > 1 and total_input_rows > 0:
+        logger.info(
+            f"Job completed: {total_input_rows:,} total rows read, "
+            f"{writer.total_written_rows:,} total rows written across {batch_count} batches."
+        )
 
 def _find_first_foreachbatch_options(
     transformation_pipeline: t.List[TransformationConfig]
@@ -128,32 +169,56 @@ def _find_first_foreachbatch_options(
     return None
 
 class MicroBatchWriter:
-    def __init__(self, base_writer: EngineAdapter):
+    def __init__(
+        self,
+        base_writer: EngineAdapter,
+        should_log_info: bool = True,
+    ):
         self.base = base_writer
         self.dialect = self.base.dialect
+        self.should_log_info = should_log_info
         self.batch_id = 0
+        self.total_written_rows = 0
         self._columns_to_types = None
+
+    def _log_output_rows(self, table_name: str, df: t.Any):
+        if isinstance(df, pd.DataFrame):
+            count = len(df)
+            self.total_written_rows += count
+            batch_num = self.batch_id + 1
+            msg = f"Batch {batch_num}: Wrote {count:,} rows to '{table_name}'."
+            if self.should_log_info:
+                logger.info(msg)
+            else:
+                logger.debug(msg)
 
     def replace_query(self, table_name, df, *args, **kwargs):
         if self.batch_id == 0:
             if not is_batch_or_stream_empty(df):
                 self.base.replace_query(table_name, df, self.get_columns_to_types(df, table_name), *args, **kwargs)
+                self._log_output_rows(table_name, df)
             elif self.base.table_exists(table_name):
                 self.base._truncate_table(table_name)
+                logger.info(f"Batch {self.batch_id + 1}: Source was empty. Truncated target table '{table_name}'.")
         else:
             if not is_batch_or_stream_empty(df):
                 self.base.insert_append(table_name, df, self.get_columns_to_types(df, table_name), *args)
+                self._log_output_rows(table_name, df)
 
         self.batch_id += 1
 
     def insert_append(self, table_name, df, *args, **kwargs):
         if is_batch_or_stream_empty(df):
+            logger.debug(f"Batch {self.batch_id + 1}: No records to append; skipping write.")
             return
 
         self.base.insert_append(table_name, df, self.get_columns_to_types(df, table_name), *args, **kwargs)
+        self._log_output_rows(table_name, df)
+        self.batch_id += 1
 
     def merge(self, target_table, df, key, when_matched_filter=None, *args, **kwargs):
         if is_batch_or_stream_empty(df):
+            logger.debug(f"Batch {self.batch_id + 1}: No records to merge; skipping write.")
             return
 
         unique_key = [exp.column(k) for k in key]
@@ -180,6 +245,8 @@ class MicroBatchWriter:
             when_matched = None
 
         self.base.merge(target_table, df, self.get_columns_to_types(df, target_table), unique_key, when_matched=when_matched, *args, **kwargs)
+        self._log_output_rows(target_table, df)
+        self.batch_id += 1
 
     def get_columns_to_types(self, df, table_name: str = None) -> t.Dict[str, exp.DataType]:
         if self._columns_to_types is None:

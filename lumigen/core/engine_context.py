@@ -262,34 +262,33 @@ class SQLContextManager:
         return self._spark_status
     
     def get_duckdb_conn(self) -> 'duckdb.DuckDBPyConnection':
-        if self._duckdb_conn:
-            return self._duckdb_conn
+        if self._duckdb_conn is None:
+            with self._duckdb_lock:
+                if self._duckdb_conn is None:
+                    import duckdb
+                    logger.info("Initializing DuckDB connection for the first time...")
+                    conn = duckdb.connect()
+                    
+                    builtin_funcs = Counter(self._list_duckdb_functions(conn))
+                    registered_udfs = self._register_all_udfs(conn)
+                    all_funcs = Counter(self._list_duckdb_functions(conn))
+                    udf_counter = all_funcs - builtin_funcs
+                    self._duckdb_udfs = set(k.lower() for k, v in udf_counter.items() if v > 0)
+                    registered_count = sum(udf_counter.values())
+                    for udf in registered_udfs:
+                        udf_name = udf.strip().lower()
+                        if udf_name not in self._duckdb_udfs:
+                            self._duckdb_udfs.add(udf_name)
+                            registered_count += 1
+                    logger.info(f"Completed DuckDB UDF registration. {registered_count} functions registered.")
 
-        with self._duckdb_lock:
-            if self._duckdb_conn is None:
-                import duckdb
-                logger.info("Initializing DuckDB connection for the first time...")
-                conn = duckdb.connect()
-                
-                builtin_funcs = Counter(self._list_duckdb_functions(conn))
-                registered_udfs = self._register_all_udfs(conn)
-                all_funcs = Counter(self._list_duckdb_functions(conn))
-                udf_counter = all_funcs - builtin_funcs
-                self._duckdb_udfs = set(k.lower() for k, v in udf_counter.items() if v > 0)
-                registered_count = sum(udf_counter.values())
-                for udf in registered_udfs:
-                    udf_name = udf.strip().lower()
-                    if udf_name not in self._duckdb_udfs:
-                        self._duckdb_udfs.add(udf_name)
-                        registered_count += 1
-                logger.info(f"Completed DuckDB UDF registration. {registered_count} functions registered.")
+                    # Manually add universally supported functions here
+                    self._duckdb_udfs.update({})
 
-                # Manually add universally supported functions here
-                self._duckdb_udfs.update({})
+                    self._duckdb_conn = conn
 
-                self._duckdb_conn = conn
-
-        return self._duckdb_conn
+        # Returns a thread-safe cursor off the root DuckDB connection
+        return self._duckdb_conn.cursor()
 
     def get_polars_context(self) -> 'pl.SQLContext':
         if self._polars_context is None:

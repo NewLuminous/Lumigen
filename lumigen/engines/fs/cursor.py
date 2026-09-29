@@ -8,8 +8,6 @@ import datetime
 import uuid
 from glob import has_magic
 from fsspec.utils import glob_translate
-from fsspec.asyn import sync
-from s3fs import S3FileSystem
 import threading
 import queue
 from concurrent.futures import ThreadPoolExecutor
@@ -233,40 +231,6 @@ class FileSystemCursor:
 
         pattern = re.compile(glob_translate(target_path))
         seen_paths: t.Set[str] = set()
-
-        if isinstance(self._fs, S3FileSystem):
-            bucket, key, _ = self._fs.split_path(root)
-            try:
-                if not bucket:
-                    buckets = [b.get("name", b.get("Key")) for b in self._fs.ls("", detail=True)]
-                else:
-                    buckets = [bucket]
-            except Exception:
-                buckets = None
-
-            if buckets is not None:
-                try:
-                    for bkt in buckets:
-                        prfx = key if bkt == bucket else ""
-                        # Use s3fs internal async generator for lazy pagination (avoids Delimiter="/" API overhead)
-                        ait = self._fs._iterdir(bkt, delimiter="", prefix=prfx)
-                        while True:
-                            try:
-                                info: t.Dict[str, t.Any] = sync(self._fs.loop, ait.__anext__)
-                                if info.get("type") != "file":
-                                    continue
-                                    
-                                full_path = info["name"]
-                                if target_path.startswith("/") and not full_path.startswith("/"):
-                                    full_path = "/" + full_path
-                                if full_path not in seen_paths and pattern.match(full_path) and _matches_filter(full_path, info):
-                                    seen_paths.add(full_path)
-                                    yield (full_path, info)
-                            except (StopAsyncIteration, StopIteration):
-                                break
-                    return
-                except Exception:
-                    pass
 
         def _traverse_matched_dir(dataset_path: str) -> t.Iterator[t.Tuple[str, t.Dict[str, t.Any]]]:
             # Skip traversing into uncommitted staging directories

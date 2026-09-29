@@ -82,14 +82,18 @@ class SparkCSVFileHandler(BaseSparkFileHandler):
         if options and options.csv_comment_char:
             reader = reader.option("comment", options.csv_comment_char)
 
-        if options and options.csv_on_bad_lines:
+        if options and options.ignore_corrupt_files:
+            reader = reader.option("mode", "DROPMALFORMED")
+        elif options and options.csv_on_bad_lines:
             mode_map = {
                 "error": "FAILFAST",
                 "skip": "DROPMALFORMED",
                 "warn": "DROPMALFORMED",
             }
-            spark_mode = mode_map.get(options.csv_on_bad_lines.lower(), "PERMISSIVE")
+            spark_mode = mode_map.get(options.csv_on_bad_lines.lower(), "FAILFAST")
             reader = reader.option("mode", spark_mode)
+        else:
+            reader = reader.option("mode", "FAILFAST")
 
         return reader
 
