@@ -16,7 +16,7 @@ from core.config.job import JobMode, DataSaveMode
 from core.engine_adapter.mixins import WatermarkStrategyMixin
 from transformers.streaming import ForeachBatch
 from utils import SQLIdentifierSet
-from utils.dataset import DataFrameConverter, get_columns_name, is_batch_or_stream_empty
+from utils.dataset import DataFrameConverter, get_columns_name
 from utils.json import DisplayableJSONEncoder
 from utils.errors import UnsupportedDataFrameError, ConfigError
 
@@ -159,8 +159,6 @@ class WatermarkTracker(ForeachBatch):
 
 def _get_row_count(df: t.Any) -> int:
     """Helper to safely get count for DataFrames without computing column stats."""
-    if is_batch_or_stream_empty(df):
-        return 0
     if isinstance(df, pyspark.sql.DataFrame):
         return df.count()
     elif isinstance(df, pd.DataFrame):
@@ -169,9 +167,6 @@ def _get_row_count(df: t.Any) -> int:
         raise UnsupportedDataFrameError(f"Unsupported DataFrame type: {type(df).__name__}")
 
 def _compute_batch_metrics(df: t.Any, watermark_field: str) -> t.Dict[str, t.Any]:
-    if is_batch_or_stream_empty(df):
-        return {"count": 0, "min": None, "max": None}
-
     df_case_insens_cols = SQLIdentifierSet(get_columns_name(df))
     if watermark_field not in df_case_insens_cols:
         raise ValueError(f"Watermark field '{watermark_field}' not found in DataFrame.")

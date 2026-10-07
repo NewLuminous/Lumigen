@@ -77,6 +77,7 @@ class KafkaClientCursor:
                         'auto.offset.reset': self._starting_mode,
                         'enable.auto.commit': False,
                         'isolation.level': 'read_committed',
+                        'socket.keepalive.enable': True, # Enable TCP keepalives to prevent intermediate firewalls dropping idle sockets
                     }
                     consumer_config = merge_dicts(consumer_config, self._shared_config)
                     logger.info("Consumer configuration: \n" + json.dumps(consumer_config, indent=2))
@@ -339,7 +340,7 @@ class KafkaClientCursor:
 
     def _get_watermark_offsets(self, topic: str, partition: int) -> t.Tuple[int, int]:
         topic_partition = TopicPartition(topic=topic, partition=partition)
-        low, high = self.consumer.get_watermark_offsets(topic_partition, timeout=10.0)
+        low, high = self.consumer.get_watermark_offsets(topic_partition, timeout=30.0)
         return low, high
     
     def _get_last_offset(self, topic: str, partition: int) -> int:

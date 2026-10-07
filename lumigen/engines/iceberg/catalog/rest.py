@@ -1,8 +1,31 @@
 from __future__ import annotations
 import typing as t
+from requests import Session
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from pyiceberg.io import S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, PY_IO_IMPL, FSSPEC_FILE_IO
+
+try:
+    from pyiceberg.io import (
+        S3_CONNECT_TIMEOUT,
+        S3_READ_TIMEOUT,
+    )
+except ImportError:
+    S3_CONNECT_TIMEOUT = "s3.connect-timeout"
+    S3_READ_TIMEOUT = "s3.read-timeout"
+
 from pyiceberg.catalog.rest import RestCatalog as BaseRestCatalog
 from pyiceberg.catalog.rest import CREDENTIAL
+
+try:
+    from pyiceberg.catalog.rest import (
+        REST_CLIENT_MAX_RETRIES,
+        REST_CLIENT_RETRY_BACKOFF_FACTOR,
+    )
+except ImportError:
+    REST_CLIENT_MAX_RETRIES = "rest.client.max-retries"
+    REST_CLIENT_RETRY_BACKOFF_FACTOR = "rest.client.retry-backoff-factor"
+
 from pyiceberg.exceptions import (
     NoSuchTableError,
     TableAlreadyExistsError,
@@ -23,24 +46,73 @@ DUMMY_BOOTSTRAP_SCHEMA = Schema(
     NestedField(field_id=1, name="_sys_init", field_type=IntegerType(), required=False)
 )
 
+_CONNECTION_RETRY_STATUS_FORCELIST = (429, 500, 502, 503, 504)
+_CONNECTION_RETRY_ALLOWED_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "POST", "PUT", "DELETE"})
+
 
 class RestCatalog(BaseRestCatalog):
     def __init__(self, name: str, **properties: str):
         # Default to FsspecFileIO for REST catalog
         properties.setdefault(PY_IO_IMPL, FSSPEC_FILE_IO)
 
+        properties.setdefault(REST_CLIENT_MAX_RETRIES, "5")
+        properties.setdefault(REST_CLIENT_RETRY_BACKOFF_FACTOR, "1.5")
+
+        properties.setdefault("s3.max-attempts", "5")
+        properties.setdefault("s3.retry-mode", "adaptive")
+        properties.setdefault(S3_CONNECT_TIMEOUT, "60")
+        properties.setdefault(S3_READ_TIMEOUT, "60")
+
         s3_access_key = properties.get(S3_ACCESS_KEY_ID)
         s3_secret_key = properties.get(S3_SECRET_ACCESS_KEY)
         if s3_access_key and s3_secret_key and not properties.get(CREDENTIAL):
             properties[CREDENTIAL] = f"{s3_access_key}:{s3_secret_key}"
 
-        # Disable STS credential vending so SeaweedFS does not throw 501 Not Implemented
-        properties.setdefault("header.X-Iceberg-Access-Delegation", "")
-
         super().__init__(name, **properties)
 
-        # Strip the header from the active HTTP session as a safety measure
-        self._session.headers.pop("X-Iceberg-Access-Delegation", None)
+    def _config_headers(self, session: Session) -> None:
+        super()._config_headers(session)
+
+        # Disable STS credential vending so SeaweedFS does not throw 501 Not Implemented
+        session.headers.pop("X-Iceberg-Access-Delegation", None)
+
+    def _create_session(self) -> Session:
+        session = super()._create_session()
+
+        retries = int(self.properties.get(REST_CLIENT_MAX_RETRIES, 5))
+        backoff = float(self.properties.get(REST_CLIENT_RETRY_BACKOFF_FACTOR, 1.5))
+
+        retry_strategy = Retry(
+            total=retries,
+            backoff_factor=backoff,
+            status_forcelist=list(_CONNECTION_RETRY_STATUS_FORCELIST),
+            allowed_methods=_CONNECTION_RETRY_ALLOWED_METHODS,
+            raise_on_status=False,
+        )
+
+        http_adapter = session.adapters.get("http://")
+        https_adapter = session.adapters.get("https://")
+
+        adapter_patched = False
+        for adapter in (http_adapter, https_adapter):
+            if adapter and hasattr(adapter, "max_retries") and isinstance(adapter.max_retries, Retry):
+                adapter.max_retries.total = retries
+                adapter.max_retries.backoff_factor = backoff
+                adapter.max_retries.status_forcelist = set(adapter.max_retries.status_forcelist or []) | set(_CONNECTION_RETRY_STATUS_FORCELIST)
+                adapter.max_retries.allowed_methods = frozenset((adapter.max_retries.allowed_methods or set()) | {"POST"})
+                adapter.max_retries.raise_on_status = False
+                adapter_patched = True
+
+        if not adapter_patched:
+            adapter = HTTPAdapter(
+                max_retries=retry_strategy,
+                pool_connections=10,
+                pool_maxsize=20,
+            )
+            session.mount("http://", adapter)
+            session.mount("https://", adapter)
+
+        return session
 
     def table_exists(self, identifier: str | Identifier) -> bool:
         try:
