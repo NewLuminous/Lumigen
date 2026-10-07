@@ -8,6 +8,7 @@ if t.TYPE_CHECKING:
     from core.config.root import Config
     from core.config.connection import SparkConnectionConfig
 
+from core.config.job import JobMode
 from utils.helpers import get_system_timezone
 from api.config import settings
 from api.enums import JobStatus
@@ -109,18 +110,32 @@ class JobManagerAdapter(JobPreviewerBase, ABC):
                     "spark.kubernetes.authenticate.driver.serviceAccountName": settings.KUBE_SERVICE_ACCOUNT,
                     "spark.kubernetes.authenticate.executor.serviceAccountName": settings.KUBE_EXECUTOR_SERVICE_ACCOUNT,
 
-                    # Dynamic Resource Allocation for Auto-scaling
-                    "spark.dynamicAllocation.enabled": "true",
-                    "spark.dynamicAllocation.shuffleTracking.enabled": "true",
-                    "spark.dynamicAllocation.minExecutors": settings.SPARK_MIN_EXECUTORS,
-                    "spark.dynamicAllocation.maxExecutors": settings.SPARK_MAX_EXECUTORS,
-                    "spark.dynamicAllocation.initialExecutors": settings.SPARK_MIN_EXECUTORS,
-                    "spark.dynamicAllocation.executorIdleTimeout": "60s", 
-                    "spark.dynamicAllocation.schedulerBacklogTimeout": "1s", 
-
                     "spark.kubernetes.driverEnv.TZ": tz_val,
                     "spark.executorEnv.TZ": tz_val,
                 }
+
+                job_mode = config.job_properties.get("job_mode", JobMode.BATCH)
+                if job_mode == JobMode.STREAMING:
+                    # Dedicated static executor pool & warm Kafka cache
+                    streaming_defaults = {
+                        "spark.dynamicAllocation.enabled": "false",
+                        "spark.sql.streaming.kafka.consumer.cache.timeout": "300000",
+                        "spark.sql.streaming.kafka.useDeprecatedOffsetFetching": "false",
+                    }
+                    k8s_defaults.update(streaming_defaults)
+                else:
+                    # Dynamic Resource Allocation for Auto-scaling
+                    batch_defaults = {
+                        "spark.dynamicAllocation.enabled": "true",
+                        "spark.dynamicAllocation.shuffleTracking.enabled": "true",
+                        "spark.dynamicAllocation.minExecutors": settings.SPARK_MIN_EXECUTORS,
+                        "spark.dynamicAllocation.maxExecutors": settings.SPARK_MAX_EXECUTORS,
+                        "spark.dynamicAllocation.initialExecutors": settings.SPARK_MIN_EXECUTORS,
+                        "spark.dynamicAllocation.executorIdleTimeout": "60s",
+                        "spark.dynamicAllocation.schedulerBacklogTimeout": "1s",
+                    }
+                    k8s_defaults.update(batch_defaults)
+
                 for key, val in k8s_defaults.items():
                     if key not in existing_keys:
                         conf.append(f"{key}={val}")
