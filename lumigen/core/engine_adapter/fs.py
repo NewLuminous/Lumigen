@@ -37,6 +37,8 @@ class FileSystemEngineAdapter(
     SUPPORTS_REPLACE_TABLE = False
     SUPPORTS_QUERY_EXECUTION_TRACKING = False
 
+    ENFORCED_WATERMARK_FIELD: str = "_metadata_file_modification_time"
+
     def __init__(
         self,
         connection_factory_or_pool: t.Union[t.Callable[[], t.Any], ConnectionPool],
@@ -177,7 +179,7 @@ class FileSystemEngineAdapter(
     
     def determine_high_watermark(self, df: DataFrameType, watermark_field: str, current_watermark_value: t.Any) -> t.Any:
         # Override watermark_field because file incremental loading relies exclusively on file modification time
-        watermark_field = "_metadata_file_modification_time"
+        watermark_field = self.ENFORCED_WATERMARK_FIELD
         max_df_watermark = None
 
         if isinstance(df, pyspark.sql.DataFrame):

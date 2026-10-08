@@ -91,12 +91,27 @@ class Config(BaseConfig):
     @model_validator(mode='after')
     def _set_source_defaults(self) -> "Config":
         """
-        Sets default values for job properties based on the source type.
-        This runs before the requirement validation.
+        Enforces required job properties based on the source adapter specifications.
+        This runs before requirement validation.
         """
         if self.source:
-            if self.source.type_ == "kafka":
-                self.job_properties["source_watermark"] = "offset"
+            adapter_cls = getattr(self.source, "_engine_adapter", None)
+            enforced_watermark = getattr(adapter_cls, "ENFORCED_WATERMARK_FIELD", None)
+            if enforced_watermark:
+                current_watermark = self.job_properties.get("source_watermark")
+                if current_watermark and current_watermark != enforced_watermark:
+                    logger.warning(
+                        f"Source '{self.source.type_}' only supports '{enforced_watermark}' for watermark tracking. "
+                        f"Overriding configured 'source_watermark' ('{current_watermark}') to '{enforced_watermark}'."
+                    )
+                else:
+                    logger.info(
+                        f"Source '{self.source.type_}' requires enforced watermark field. "
+                        f"Setting 'source_watermark' = '{enforced_watermark}'."
+                    )
+
+                self.job_properties["source_watermark"] = enforced_watermark
+
         return self
     
     @model_validator(mode='after')

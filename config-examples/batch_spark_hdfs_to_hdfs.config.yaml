@@ -1,0 +1,32 @@
+source:
+  type: hdfs
+  host: localhost
+  port: 8020
+  user: hdfs
+  replication: 3
+  file_options:
+    field_delimiter: ","
+    header: true
+    csv_quote_char: '"'
+    csv_comment_char: "#"
+
+sink:
+  type: hdfs
+  host: localhost
+  port: 8020
+  user: hdfs
+  replication: 3
+  file_options:
+    field_delimiter: "\t"
+    header: true
+
+executor:
+  type: spark
+  app_name: batch file
+  config:
+    spark.scheduler.mode: FAIR
+
+job_properties:
+  source_path: /tmp/sample_data.csv
+  sink_path: /tmp/sample_data.tsv
+  data_save_mode: OVERWRITE

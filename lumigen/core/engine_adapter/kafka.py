@@ -44,6 +44,8 @@ class KafkaEngineAdapter(
     SUPPORTS_REPLACE_TABLE = False
     SUPPORTS_QUERY_EXECUTION_TRACKING = False
 
+    ENFORCED_WATERMARK_FIELD: str = "offset"
+
     def build_query(
         self,
         path: t.Optional[str] = None,

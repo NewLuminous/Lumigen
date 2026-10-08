@@ -1,0 +1,18 @@
+source:
+  type: s3
+  endpoint_url: s3.us-east-2.amazonaws.com
+  s3_access_key_id: xxxxxxxxxxxxxxxxx
+  s3_secret_access_key: xxxxxxxxxxxxxxxxx
+  file_options:
+    excel_skip_rows: 1
+
+sink:
+  type: s3
+  endpoint_url: s3.cn-north-1.amazonaws.com.cn
+  s3_access_key_id: xxxxxxxxxxxxxxxxx
+  s3_secret_access_key: xxxxxxxxxxxxxxxxx
+
+job_properties:
+  source_path: files/*data.xlsx
+  sink_path: files/sample_excel.xlsx
+  data_save_mode: OVERWRITE

@@ -10,13 +10,13 @@ psycopg2-binary>=2.9.10
 pyarrow>=18.1.0
 pydantic-settings>=2.10.1
 pyhocon>=0.3.61
-pyiceberg[pyiceberg-core,s3fs,hive,dynamodb,bigquery]>=0.11.1
+pyiceberg[pyiceberg-core,s3fs,hive,dynamodb,bigquery]>=0.12.0
 pymssql>=2.3.2
 pymysql>=1.1.1
 pyspark==3.3.3
 python-calamine>=0.8.2
 python-dotenv>=1.0.1
 sqlalchemy>=2.0.50
-sqlmesh==0.220.2
+sqlmesh==0.236.3
 xlrd>=2.0.2
 xlsxwriter>=3.2.9

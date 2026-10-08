@@ -15,6 +15,13 @@ from sqlmesh.core.engine_adapter.shared import (
 from core.engine_adapter.mixins import EngineAdapterMixin, FetchBatchMixin
 
 
+# PostgreSQL interprets x'...' (HexString) as BIT strings, which cannot be cast to BYTEA.
+# Convert HexString nodes to DECODE('...', 'hex') so they evaluate natively to BYTEA.
+Postgres.Generator.TRANSFORMS[exp.HexString] = (
+    lambda self, e: f"DECODE('{self.sql(e, 'this')}', 'hex')"
+)
+
+
 class PostgresEngineAdapter(
     FetchBatchMixin,
     EngineAdapterMixin,
