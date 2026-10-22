@@ -7,11 +7,10 @@ import sys
 from sqlglot.helper import ensure_list
 
 from config.environment import settings
-from config.logging import setup_logger
+from config.logging_config import setup_logger
 setup_logger(settings.LOG_LEVEL.upper())
 logger = logging.getLogger(__name__)
 
-from config.environment import settings
 from core.config.loader import load_config
 from core.config.job import JobPropertiesModel
 from core.engine_context import SQLContextManager

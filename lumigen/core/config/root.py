@@ -24,6 +24,16 @@ from core.config.job import (
 logger = logging.getLogger(__name__)
 
 
+def _canonicalize(obj: object) -> object:
+    if isinstance(obj, (set, frozenset)):
+        return sorted(map(_canonicalize, obj))  # type: ignore[type-var]
+    if isinstance(obj, dict):
+        return {k: _canonicalize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(map(_canonicalize, obj))
+    return obj
+
+
 _connection_config_field_validator = field_validator(
     "source",
     "sink",
@@ -150,4 +160,4 @@ class Config(BaseConfig):
 
     @property
     def fingerprint(self) -> str:
-        return str(zlib.crc32(pickle.dumps(self.dict(exclude={"audit_store"}))))
+        return str(zlib.crc32(pickle.dumps(_canonicalize(self.dict(exclude={"audit_store"})))))
