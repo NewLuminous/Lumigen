@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from concurrent.futures import ThreadPoolExecutor
 
 from api.config import settings
-from config.logging import setup_logger
+from config.logging_config import setup_logger
 setup_logger(level=settings.LOG_LEVEL.upper())
 logger = logging.getLogger(__name__)
 middleware_logger = logging.getLogger("api.middleware")
@@ -28,14 +28,21 @@ async def lifespan(app: FastAPI):
 
     start_embedded_spark_session()
 
-    # Initialize and start the unified background status watcher
     from api.dependencies import get_job_manager
     from api.services.watcher import JobStatusWatcher
+    from api.services.reconciler import JobReconciler
 
     job_manager = await get_job_manager()
+
+    # Start the UI Watcher (Fast polling, only for active SSE clients)
     watcher = JobStatusWatcher(max_retries=3)
     watcher.start(job_manager, app.state.custom_blocking_task_executor)
     app.state.job_status_watcher = watcher
+
+    # Start the Global Reconciler (Slow polling, heals unattended jobs)
+    reconciler = JobReconciler(interval_seconds=60)
+    reconciler.start(job_manager, app.state.custom_blocking_task_executor)
+    app.state.job_reconciler = reconciler
 
     yield
 
@@ -44,6 +51,11 @@ async def lifespan(app: FastAPI):
         # Allow pending tasks to complete, but don't wait indefinitely
         app.state.custom_blocking_task_executor.shutdown(wait=True)
         logger.info("Custom ThreadPoolExecutor shut down.")
+
+    if hasattr(app.state, "job_reconciler"):
+        logger.info("Shutting down JobReconciler...")
+        await app.state.job_reconciler.stop()
+        logger.info("JobReconciler shut down.")
 
     if hasattr(app.state, "job_status_watcher"):
         logger.info("Shutting down JobStatusWatcher...")

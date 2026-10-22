@@ -13,7 +13,7 @@ if t.TYPE_CHECKING:
     from core.config.root import Config
     from core.engine_adapter.mixins import EngineAdapterMixin, FetchBatchMixin
 
-from config.logging import setup_logger
+from config.logging_config import setup_logger
 setup_logger(logging.INFO)
 logger = logging.getLogger(__name__)
 

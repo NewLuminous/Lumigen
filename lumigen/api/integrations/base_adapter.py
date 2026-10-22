@@ -170,3 +170,11 @@ class JobManagerAdapter(JobPreviewerBase, ABC):
             
         command.extend(["-c", config_path_in_container])
         return command
+
+    def auto_heal_routine(self) -> None:
+        """Global reconciliation routine to heal orphaned/failed jobs."""
+        pass
+
+    def auto_heal_job(self, id: str) -> bool:
+        """Attempts to autonomously heal a specific FAILED job."""
+        return False

@@ -63,7 +63,8 @@ class Settings(BaseSettings):
 
     # Job settings
     JOB_MANAGER_TYPE: str = "docker"  # Can be "docker" or "kubernetes"
-    STREAMING_JOB_RETRY_LIMIT: int = 3
+    STREAMING_JOB_RETRY_LIMIT: int = 7
+    STREAMING_HEALTHY_UPTIME_SECONDS: int = 3600
     TEMP_JOB_TIMEOUT_SECONDS: int = 600
 
     # Job Pruning

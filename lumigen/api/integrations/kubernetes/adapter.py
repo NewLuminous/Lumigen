@@ -20,8 +20,8 @@ from kubernetes.client.rest import ApiException
 
 if t.TYPE_CHECKING:
     from urllib3 import HTTPResponse
-    from core.config.root import Config
 
+from core.config.root import Config
 from core.config.job import JobMode
 from utils import yaml
 from utils.helpers import get_system_timezone
@@ -1017,6 +1017,76 @@ class KubernetesAdapter(JobManagerAdapter):
         else:
             logger.debug("Count-based pruning finished. No jobs met the criteria for pruning.")
         return total_pruned_count
+
+    def auto_heal_routine(self):
+        """
+        Global reconciliation routine.
+        Finds ALL failed streaming jobs in the namespace and attempts to autonomously heal them.
+        """
+        app_name_label = self._normalize_k8s_name(settings.PROJECT_NAME)
+        label_selector = f"app.kubernetes.io/managed-by={app_name_label},{app_name_label}/job-mode=streaming"
+        
+        try:
+            jobs = self.batch_v1_api.list_namespaced_job(self.namespace, label_selector=label_selector).items
+        except Exception as e:
+            logger.error(f"Failed to list jobs for auto-heal reconciliation: {e}")
+            return
+            
+        for job in jobs:
+            status = self._get_status_from_k8s_job(job)
+            if status == JobStatus.FAILED:
+                job_id = job.metadata.labels.get(f"{app_name_label}/job-id")
+                if job_id:
+                    self.auto_heal_job(job_id)
+
+    def auto_heal_job(self, id: str) -> bool:
+        """
+        Attempts to autonomously heal a FAILED streaming job if it has proven
+        to be healthy for a long time before exhausting its retry limits.
+        """
+        job = self._get_job_by_id(id)
+        if not job: 
+            return False
+
+        status = self._get_status_from_k8s_job(job)
+        if status != JobStatus.FAILED: 
+            return False
+
+        # Ensure this is a STREAMING job
+        app_name_label = self._normalize_k8s_name(settings.PROJECT_NAME)
+        job_mode = job.metadata.labels.get(f"{app_name_label}/job-mode", "").upper()
+        if job_mode != str(JobMode.STREAMING).upper():
+            return False
+
+        # Calculate total lifetime of the Job object
+        start_time: t.Optional[datetime] = job.status.start_time or job.metadata.creation_timestamp
+        end_time: t.Optional[datetime] = self._get_job_end_time(job) or datetime.now(timezone.utc)
+        if not start_time or not end_time:
+            return False
+
+        uptime_seconds = (end_time - start_time).total_seconds()
+        healthy_threshold = settings.STREAMING_HEALTHY_UPTIME_SECONDS
+
+        # If it survived past the threshold before failing, HEAL IT
+        if uptime_seconds >= healthy_threshold:
+            logger.warning(f"Streaming job '{id}' exhausted K8s retries but had an uptime of {int(uptime_seconds)}s. Auto-healing...")
+            try:
+                # Recover the original configuration from the Kubernetes Secret
+                resource_name = job.metadata.name
+                secret = self.core_v1_api.read_namespaced_secret(name=resource_name, namespace=self.namespace)
+                
+                yaml_str = base64.b64decode(secret.data["config.yaml"]).decode('utf-8')
+                config_dict = yaml.load(yaml_str)
+                config = Config(**config_dict)
+
+                # Resubmit the job (This automatically deletes the FAILED job and creates a new one)
+                self._perform_submit(config, id, name=self.get_job_name(id))
+                logger.info(f"Successfully auto-healed and resubmitted job '{id}'.")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to auto-heal job '{id}': {e}", exc_info=True)
+        
+        return False
         
     @staticmethod
     def _normalize_k8s_name(name: str) -> str:
