@@ -1172,7 +1172,7 @@ class IcebergCursor:
                     select_exp = select_exp.where(final_condition)
                 
                 if df is not None:
-                    source_in_select = t.cast("exp.From", select_exp.args["from"]).this
+                    source_in_select = t.cast("exp.From", select_exp.args.get("from_") or select_exp.args["from"]).this
                     register_kwargs["exclude_table_exp_ids"] = {id(source_in_select)}
                 self._register_tables_for_ast(select_exp, **register_kwargs)
                 inserted_df = self._duckdb_conn.execute(select_exp.sql(Dialects.DUCKDB)).to_arrow_table()

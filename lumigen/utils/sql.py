@@ -110,7 +110,7 @@ def extract_main_table(query: t.Union[exp.Expression, str],
         elif isinstance(node, exp.TruncateTable):
             return _resolve_table(node.find(exp.Table), visited)
         elif isinstance(node, exp.Select):
-            from_exp = t.cast("exp.From", node.args.get("from"))
+            from_exp = t.cast("exp.From", t.cast("exp.From", node.args.get("from_") or node.args["from"]))
             if from_exp:
                 return _resolve_table(from_exp.this, visited)
         elif isinstance(node, exp.Union):

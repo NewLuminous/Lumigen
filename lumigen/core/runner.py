@@ -79,7 +79,7 @@ class JobRunner(ABC):
                 watermark_column = exp.to_column(job_props.source_watermark)
 
                 query = exp.select("*").from_(base_query.subquery(alias="foo"))
-                if last_watermark:
+                if last_watermark is not None:
                     watermark_literal = transform_value(last_watermark)
                     query = query.where(exp.GT(this=watermark_column, expression=watermark_literal))
 

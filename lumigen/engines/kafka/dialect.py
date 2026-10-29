@@ -87,8 +87,8 @@ class Kafka(Dialect):
             # Determine if this SELECT statement is querying a derived table (like a subquery).
             # If so, we do not apply the strict Kafka field validation.
             is_querying_derived_table = False
-            if select_expr.args.get("from"):
-                source = select_expr.args["from"].this
+            if select_expr.args.get("from_") or select_expr.args["from"]:
+                source = t.cast("exp.From", select_expr.args.get("from_") or select_expr.args["from"]).this
                 if not isinstance(source, exp.Table):
                     is_querying_derived_table = True
             
