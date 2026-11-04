@@ -114,6 +114,15 @@ class JobManagerAdapter(JobPreviewerBase, ABC):
                     "spark.executorEnv.TZ": tz_val,
                 }
 
+                if options.get("driver-cores") is None:
+                    k8s_defaults["spark.driver.cores"] = settings.SPARK_DRIVER_CORES
+                if options.get("driver-memory") is None:
+                    k8s_defaults["spark.driver.memory"] = settings.SPARK_DRIVER_MEMORY
+                if options.get("executor-cores") is None:
+                    k8s_defaults["spark.executor.cores"] = settings.SPARK_EXECUTOR_CORES
+                if options.get("executor-memory") is None:
+                    k8s_defaults["spark.executor.memory"] = settings.SPARK_EXECUTOR_MEMORY
+
                 job_mode = config.job_properties.get("job_mode", JobMode.BATCH)
                 if job_mode == JobMode.STREAMING:
                     # Dedicated static executor pool & warm Kafka cache
@@ -121,11 +130,19 @@ class JobManagerAdapter(JobPreviewerBase, ABC):
                         "spark.dynamicAllocation.enabled": "false",
                         "spark.sql.streaming.kafka.consumer.cache.timeout": "300000",
                         "spark.sql.streaming.kafka.useDeprecatedOffsetFetching": "false",
+
+                        "spark.sql.adaptive.enabled": "true",
+                        "spark.sql.adaptive.coalescePartitions.enabled": "true",
+                        "spark.sql.adaptive.advisoryPartitionSizeInBytes": "67108864", 
                     }
                     k8s_defaults.update(streaming_defaults)
                 else:
                     # Dynamic Resource Allocation for Auto-scaling
                     batch_defaults = {
+                        "spark.sql.adaptive.enabled": "true",
+                        "spark.sql.adaptive.coalescePartitions.enabled": "true",
+                        "spark.sql.adaptive.advisoryPartitionSizeInBytes": "67108864", 
+
                         "spark.dynamicAllocation.enabled": "true",
                         "spark.dynamicAllocation.shuffleTracking.enabled": "true",
                         "spark.dynamicAllocation.minExecutors": settings.SPARK_MIN_EXECUTORS,

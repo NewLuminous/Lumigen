@@ -85,6 +85,24 @@ class Settings(BaseSettings):
     # Spark Auto-scaling Limits
     SPARK_MIN_EXECUTORS: int = 1
     SPARK_MAX_EXECUTORS: int = 10
+
+    # Spark Resources (Driver & Executor)
+    SPARK_DRIVER_CORES: int = Field(
+        default=1,
+        description="Number of CPU cores to allocate for the Spark driver."
+    )
+    SPARK_DRIVER_MEMORY: str = Field(
+        default="2g",
+        description="Amount of memory to allocate for the Spark driver (e.g., '1g', '2048m')."
+    )
+    SPARK_EXECUTOR_CORES: int = Field(
+        default=1,
+        description="Number of CPU cores to allocate per Spark executor."
+    )
+    SPARK_EXECUTOR_MEMORY: str = Field(
+        default="2g",
+        description="Amount of memory to allocate per Spark executor (e.g., '2g', '4096m')."
+    )
     
     @model_validator(mode='after')
     def calculate_derived_settings(self) -> 'Settings':
