@@ -3,17 +3,20 @@ import typing as t
 from abc import ABC, abstractmethod
 import logging
 import threading
+from sqlglot import exp, Dialects
 
 if t.TYPE_CHECKING:
     from core.config.root import Config
     from core.config.connection import SparkConnectionConfig
 
 from core.config.job import JobMode
+from core.engine_context import SQLContextManager, SparkStatus
 from utils.helpers import get_system_timezone
 from api.config import settings
 from api.enums import JobStatus
 from api.schemas import JobStatusResponse, JobInfoResponse, JobMetricsResponse
 from api.services.job_previewer import JobPreviewerBase
+import transformers
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +126,37 @@ class JobManagerAdapter(JobPreviewerBase, ABC):
                 if options.get("executor-memory") is None:
                     k8s_defaults["spark.executor.memory"] = settings.SPARK_EXECUTOR_MEMORY
 
+                context_manager = SQLContextManager.get_instance()
+                has_python_udf = False
+                for transform_cfg in config.transformation_pipeline:
+                    if transform_cfg.name.upper() == "SQL":
+                        query = transform_cfg.options.get("query")
+                        if not query:
+                            continue
+
+                        source_cfg = config.get_source()
+                        engine_adapter_src = source_cfg.create_engine_adapter() if source_cfg else None
+                        select_exp = transformers.sql.SQL.parse_and_validate_query(query, engine_adapter_src, engine_dialect=Dialects.SPARK, **config.job_properties)
+                        for func_exp in select_exp.find_all(exp.Anonymous):
+                            spark_status = context_manager.get_spark_status()
+                            if spark_status != SparkStatus.READY: # Could not use Spark Session to check if a function is truly a UDF
+                                has_python_udf = True
+                                break
+
+                            func_name = func_exp.name.lower()
+                            if func_name and context_manager.udf_exists(func_name, "spark"):
+                                has_python_udf = True
+                                break
+                    if has_python_udf:
+                        break
+
+                if has_python_udf:
+                    # Scales off-heap memory to prevent OOMKilled errors from Python/Arrow UDF execution.
+                    k8s_defaults["spark.kubernetes.memoryOverheadFactor"] = 0.4
+
+                    # Prevent PyArrow from holding massive micro-batches in RAM
+                    k8s_defaults["spark.sql.execution.arrow.maxRecordsPerBatch"] = 10000
+
                 job_mode = config.job_properties.get("job_mode", JobMode.BATCH)
                 if job_mode == JobMode.STREAMING:
                     # Dedicated static executor pool & warm Kafka cache
@@ -130,10 +164,6 @@ class JobManagerAdapter(JobPreviewerBase, ABC):
                         "spark.dynamicAllocation.enabled": "false",
                         "spark.sql.streaming.kafka.consumer.cache.timeout": "300000",
                         "spark.sql.streaming.kafka.useDeprecatedOffsetFetching": "false",
-
-                        "spark.sql.adaptive.enabled": "true",
-                        "spark.sql.adaptive.coalescePartitions.enabled": "true",
-                        "spark.sql.adaptive.advisoryPartitionSizeInBytes": "67108864", 
                     }
                     k8s_defaults.update(streaming_defaults)
                 else:
