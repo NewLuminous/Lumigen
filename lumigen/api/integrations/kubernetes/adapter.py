@@ -133,6 +133,14 @@ class KubernetesAdapter(JobManagerAdapter):
                 logger.error(f"Job '{id}' submission failed: {error_detail}")
                 raise HTTPException(status_code=404, detail=error_detail)
 
+        if config.get_executor() and config.get_executor().type_ == "spark":
+            if settings.SPARK_EVENT_LOG_ENABLED:
+                log_pvc_name = settings.KUBE_LOG_PVC_NAME
+                if not self._check_pvc_exists(log_pvc_name):
+                    error_detail = f"Required PersistentVolumeClaim '{log_pvc_name}' for Spark event logs not found in namespace '{self.namespace}'."
+                    logger.error(f"Job '{id}' submission failed: {error_detail}")
+                    raise HTTPException(status_code=404, detail=error_detail)
+
         existing_job = self._get_job_by_id(id)
         if existing_job:
             status = self._get_status_from_k8s_job(existing_job)
@@ -773,6 +781,22 @@ class KubernetesAdapter(JobManagerAdapter):
                     persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(claim_name=pvc_name)
                 )
             )
+
+        if config.get_executor() and config.get_executor().type_ == "spark":
+            if settings.SPARK_EVENT_LOG_ENABLED:
+                # Extract local container path (e.g. "file:///tmp/spark-events" -> "/tmp/spark-events")
+                log_mount_path = settings.SPARK_EVENT_LOG_DIR.replace("file://", "")
+                log_pvc_name = settings.KUBE_LOG_PVC_NAME
+                
+                volume_mounts.append(
+                    client.V1VolumeMount(name="spark-log-volume", mount_path=log_mount_path)
+                )
+                volumes.append(
+                    client.V1Volume(
+                        name="spark-log-volume",
+                        persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(claim_name=log_pvc_name)
+                    )
+                )
 
         env_vars = [
             client.V1EnvVar(name="TZ", value=self.host_timezone),

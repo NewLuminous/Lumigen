@@ -98,9 +98,19 @@ class JobManagerAdapter(JobPreviewerBase, ABC):
             options: dict = config.job_properties.setdefault("spark_submit_options", {})
             options.setdefault("master", settings.SPARK_MASTER)
             conf: t.List[str] = options.setdefault("conf", [])
-            if t.cast("str", options["master"]).startswith("k8s"):
-                existing_keys = {c.split('=', 1)[0] for c in conf if '=' in c}
+            existing_keys = {c.split('=', 1)[0] for c in conf if '=' in c}
 
+            if settings.SPARK_EVENT_LOG_ENABLED:
+                defaults = {
+                    "spark.eventLog.enabled": "true",
+                    "spark.eventLog.dir": settings.SPARK_EVENT_LOG_DIR,
+                    "spark.eventLog.compress": "true",
+                }
+                for key, val in defaults.items():
+                    if key not in existing_keys:
+                        conf.append(f"{key}={val}")
+
+            if t.cast("str", options["master"]).startswith("k8s"):
                 # Get the timezone from the host/API container
                 tz_val = get_system_timezone()
 

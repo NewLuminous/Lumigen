@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     KUBE_SERVICE_ACCOUNT: str = "spark"
     KUBE_EXECUTOR_SERVICE_ACCOUNT: str = "default"
     KUBE_CHECKPOINT_PVC_NAME: str = "spark-checkpoints-pvc"
+    KUBE_LOG_PVC_NAME: str = "spark-log-pvc"
 
     # Metrics settings
     METRICS_PROVIDER: str = Field(default="metrics-api",
@@ -81,6 +82,8 @@ class Settings(BaseSettings):
         default="local[*]",
         description="The --master argument for spark-submit. Examples: 'local[*]', 'yarn', or 'k8s://<api_server>'."
     )
+    SPARK_EVENT_LOG_ENABLED: bool = False
+    SPARK_EVENT_LOG_DIR: str = "file:///tmp/spark-events"
 
     # Spark Auto-scaling Limits
     SPARK_MIN_EXECUTORS: int = 1
