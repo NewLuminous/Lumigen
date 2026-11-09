@@ -62,7 +62,11 @@ All endpoints are prefixed with `/v1`.
 
 ### 1. Build the Docker Image
 
-Before running jobs, you must build the Lumigen Docker image. A helper script is provided to handle the build process securely:
+Before running jobs, you must build the Lumigen Docker image.
+
+> **Note:** The Lumigen Docker image is built on top of the base image `newluminous/spark-k8s`. If the base image is not present locally, it is built from the [containerized-data-engines](https://github.com/NewLuminous/containerized-data-engines/tree/main/spark-k8s) repository under the `spark-k8s/` directory.
+
+A helper script is provided to handle the build process securely:
 
 ```bash
 ./build.sh
@@ -100,6 +104,8 @@ KUBE_NAMESPACE=lumigen
 KUBE_EXECUTOR_NAMESPACE=spark
 KUBE_SERVICE_ACCOUNT=spark
 KUBE_EXECUTOR_SERVICE_ACCOUNT=default
+KUBE_CHECKPOINT_PVC_NAME=spark-checkpoints-pvc
+KUBE_LOG_PVC_NAME=spark-log-pvc
 
 # Spark Master URL (Targeting the Kubernetes API Server)
 SPARK_MASTER=k8s://https://<your-k8s-api-server>:<port>
@@ -107,6 +113,8 @@ SPARK_MASTER=k8s://https://<your-k8s-api-server>:<port>
 # Spark Auto-Scaling (Dynamic Resource Allocation)
 SPARK_MIN_EXECUTORS=1
 SPARK_MAX_EXECUTORS=10
+
+SPARK_EVENT_LOG_ENABLED=true
 
 # Real-time Metrics (Optional: 'metrics-api' or 'prometheus')
 METRICS_PROVIDER=prometheus
