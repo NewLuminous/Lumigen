@@ -163,8 +163,8 @@ class SQLIdentifierDict(UserDict):
     identifier may vary in casing or quoting style compared to the stored key.
     """
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
         self._map: t.Dict[str, str] = {}
+        super().__init__(*args, **kwargs)
         # Populate map with the initial data keys
         for k in self.data:
             lower_k = str(k).lower()

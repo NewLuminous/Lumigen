@@ -465,7 +465,7 @@ def to_pandas_dtype(data_type: exp.DataType | exp.DATA_TYPE) -> str:
             "mediumint": "int32",
             "serial": "int32",
         }
-        return int_width_map.get(t.value, "int64")
+        return int_width_map.get(t.value.lower(), "int64")
 
     if t in exp.DataType.UNSIGNED_INTEGER_TYPES:
         uint_width_map = {
@@ -474,7 +474,7 @@ def to_pandas_dtype(data_type: exp.DataType | exp.DATA_TYPE) -> str:
             "uint": "uint32",
             "umediumint": "uint32",
         }
-        return uint_width_map.get(t.value, "uint64")
+        return uint_width_map.get(t.value.lower(), "uint64")
 
     if t in exp.DataType.REAL_TYPES:
         return "float32" if t == exp.DataType.Type.FLOAT else "float64"

@@ -76,6 +76,7 @@ job_properties:
 
 *   Python 3.10+
 *   An execution engine environment configured (e.g., local Python with Pandas, or access to a Spark cluster with `SPARK_HOME` set).
+    *   **Spark Dependencies:** For Spark jobs, the `$SPARK_HOME/jars` folder must contain all sufficient libraries required by your source and sink connectors (e.g., connector JARs for Iceberg, Kafka, database JDBC drivers, and AWS/Hadoop bundles). For a reference list of required libraries (e.g., for Spark 3.3.3), see this [build script](https://github.com/NewLuminous/containerized-data-engines/blob/main/spark-k8s/build.sh).
 *   For SeaTunnel, `SEATUNNEL_HOME` must be set.
 *   For Kafka Connectivity: `librdkafka`
     To use the Kafka connector, you must have the `librdkafka` C library installed on your system. The `confluent-kafka-python` library, used by Lumigen, depends on it.

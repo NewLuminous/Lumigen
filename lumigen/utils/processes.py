@@ -11,8 +11,12 @@ def submit_job(command: t.Union[str, t.List[str]]) -> t.Optional[int]:
         stderr=subprocess.STDOUT,
         text=True,
     )
-    for line in p.stdout:
-        print(line, end='')
+    try:
+        for line in p.stdout:
+            print(line, end='')
+    finally:
+        if p.stdout and hasattr(p.stdout, "close"):
+            p.stdout.close()
         
     p.wait()
     return p.returncode
