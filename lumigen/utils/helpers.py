@@ -9,15 +9,18 @@ def coalesce(*arg):
     return None
 
 def get_system_timezone() -> str:
+    def _clean(val: str) -> str:
+        return val.strip().lstrip("/")
+
     # Use TZ if already set in environment
     if tz := os.getenv("TZ"):
-        return tz
+        return _clean(tz)
 
     # Check /etc/timezone (Debian / Ubuntu)
     tz_file = Path("/etc/timezone")
     if tz_file.is_file():
         try:
-            content = tz_file.read_text().strip()
+            content = _clean(tz_file.read_text())
             if content:
                 return content
         except Exception:
@@ -29,7 +32,7 @@ def get_system_timezone() -> str:
         try:
             target = os.readlink(localtime)
             if "zoneinfo/" in target:
-                return target.split("zoneinfo/")[-1]
+                return _clean(target.split("zoneinfo/")[-1])
         except Exception:
             pass
 
@@ -39,7 +42,7 @@ def get_system_timezone() -> str:
         try:
             match = re.search(r'ZONE="?([^"\n]+)"?', clock_file.read_text())
             if match:
-                return match.group(1)
+                return _clean(match.group(1))
         except Exception:
             pass
 
@@ -47,7 +50,7 @@ def get_system_timezone() -> str:
     try:
         import tzlocal
         if tz_name := tzlocal.get_localzone_name():
-            return tz_name
+            return _clean(tz_name)
     except Exception:
         pass
 

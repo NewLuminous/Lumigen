@@ -110,7 +110,7 @@ def extract_main_table(query: t.Union[exp.Expression, str],
         elif isinstance(node, exp.TruncateTable):
             return _resolve_table(node.find(exp.Table), visited)
         elif isinstance(node, exp.Select):
-            from_exp = t.cast("exp.From", t.cast("exp.From", node.args.get("from_") or node.args["from"]))
+            from_exp = t.cast("exp.From", node.args.get("from_") or node.args["from"])
             if from_exp:
                 return _resolve_table(from_exp.this, visited)
         elif isinstance(node, exp.Union):
@@ -224,14 +224,21 @@ def identifier_requires_quoting(name: str, dialect_name: str, identify_setting: 
     return unquoted_content == name
 
 def split_and_conditions(condition_expr: t.Optional[exp.Expression]) -> t.List[exp.Expression]:
-    """Recursively extract individual conditions connected by AND."""
+    """Iteratively extract individual conditions connected by AND in O(K) time."""
     if not condition_expr:
         return []
-    if isinstance(condition_expr, exp.And):
-        return split_and_conditions(condition_expr.left) + split_and_conditions(condition_expr.right)
-    if isinstance(condition_expr, exp.Paren):
-        return split_and_conditions(condition_expr.this)
-    return [condition_expr]
+    result: t.List[exp.Expression] = []
+    stack: t.List[exp.Expression] = [condition_expr]
+    while stack:
+        curr = stack.pop()
+        if isinstance(curr, exp.And):
+            stack.append(curr.right)
+            stack.append(curr.left)
+        elif isinstance(curr, exp.Paren):
+            stack.append(curr.this)
+        else:
+            result.append(curr)
+    return result
 
 
 @dataclass
@@ -335,6 +342,9 @@ class TablePushdownExtractor:
         The method performs a scoped analysis of SELECT, UPDATE, and DELETE statements 
         to identify conditions that reference exactly one table.
         """
+        for data in self.tables_data:
+            data._conditions.clear()
+
         for scope_node in self.parsed.find_all(*self.scope_types):
             # Gather candidate conditions from WHERE and ON clauses
             candidates = []

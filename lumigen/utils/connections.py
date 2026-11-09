@@ -39,17 +39,19 @@ class JdbcUriTranslator:
         is_jdbc = uri.startswith("jdbc:")
         uri_core = uri[len("jdbc:"):] if is_jdbc else uri
 
-        # Oracle format 1: oracle:thin:@host:port:db
-        match_oracle = re.match(r"^oracle:thin:(@?)([^/:]+):(\d+):(.+)$", uri_core)
+        # Oracle Thin: host:port:SID or //host:port/SERVICE, with or without user/password@.
+        # SQLAlchemy reads the URL database as the SID, a service goes in ?service_name=.
+        match_oracle = re.match(
+            r"^oracle:thin:(?:([^/@]+)/([^@]+))?@(?://)?([^/:]+):(\d+)([:/])([^?]+)(?:\?(.*))?$",
+            uri_core,
+        )
         if match_oracle:
-            _, host, port, db = match_oracle.groups()
-            uri_core = f"oracle://{host}:{port}/{db}"
-
-        # Oracle format 2 (with auth): oracle:thin:user/pass@host:port:db
-        match_oracle_auth = re.match(r"^oracle:thin:([^/]+)/([^@]+)@([^:]+):(\d+):(.+)$", uri_core)
-        if match_oracle_auth:
-            u, p, host, port, db = match_oracle_auth.groups()
-            uri_core = f"oracle://{quote(u)}:{quote(p)}@{host}:{port}/{db}"
+            u, p, host, port, separator, db, query = match_oracle.groups()
+            auth = f"{quote(u)}:{quote(p)}@" if u else ""
+            params = [f"service_name={quote(db)}"] if separator == "/" else []
+            params += [query] if query else []
+            target = f"/{db}" if separator == ":" else "/"
+            uri_core = f"oracle://{auth}{host}:{port}{target}" + (f"?{'&'.join(params)}" if params else "")
 
         # SQL Server format: sqlserver://host;db=x;user=y
         if uri_core.startswith("sqlserver://") or uri_core.startswith("mssql+pyodbc://"):
@@ -180,13 +182,16 @@ class JdbcUriTranslator:
                 parts.append(f"{k}={v}")
             return ";".join(parts)
         elif base_dialect == "oracle":
-            # Oracle Thin format
+            # Oracle Thin format: the URL database is the SID (host:port:SID), ?service_name= a service (//host:port/SERVICE)
+            service_name = q_params.pop("service_name", None)
+            sid = path.lstrip("/")
+            target = f"//{netloc}/{service_name}" if service_name else (f"{netloc}:{sid}" if sid else netloc)
             if final_user and final_pass:
-                base_url = f"jdbc:oracle:thin:{quote(final_user, safe='')}/{quote(final_pass, safe='')}@{netloc}{path}"
+                base_url = f"jdbc:oracle:thin:{quote(final_user, safe='')}/{quote(final_pass, safe='')}@{target}"
             elif final_user:
-                base_url = f"jdbc:oracle:thin:{quote(final_user, safe='')}@{netloc}{path}"
+                base_url = f"jdbc:oracle:thin:{quote(final_user, safe='')}@{target}"
             else:
-                base_url = f"jdbc:oracle:thin:@{netloc}{path}"
+                base_url = f"jdbc:oracle:thin:@{target}"
             
             # Oracle rarely uses query strings, but append if present
             new_query = urlencode(q_params)

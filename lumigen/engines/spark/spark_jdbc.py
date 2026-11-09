@@ -48,6 +48,7 @@ class SparkJDBCCursor(SparkStreamToBatchCursor):
             "url": connect_string,
             "user": c.user,
             "password": c.password,
+            "fetchsize": "10000",
         }
         return jdbc_options
 
@@ -63,8 +64,8 @@ class SparkJDBCCursor(SparkStreamToBatchCursor):
         """
         # If a streaming DataFrame is passed, delegate to the base class's `foreachBatch` setup.
         # This will then call this same `execute` method again for each micro-batch.
-        if df and df.isStreaming:
-            super().execute(query, df, batch_id=batch_id, **kwargs)
+        if df is not None and df.isStreaming:
+            return super().execute(query, df, batch_id=batch_id, **kwargs)
 
         parsed_exp = parse_one(query, dialect=self.dialect)
         if df and isinstance(parsed_exp, exp.Insert):

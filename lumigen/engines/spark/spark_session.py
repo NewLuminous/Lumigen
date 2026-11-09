@@ -86,16 +86,16 @@ class SparkSessionConnection:
             if self._spark_major_minor >= (3, 4):
                 return self.spark.catalog.setCurrentCatalog(catalog_name)
             else:
-                self.spark.sql(f"SET CATALOG {self.catalog}")
+                self.spark.sql(f"SET CATALOG {catalog_name}")
         # Databricks does not support `setCurrentCatalog` with Unity catalog
         # and shared clusters so we use the Databricks Unity only SQL command instead
         except Py4JError:
             from pyspark.sql.utils import ParseException
 
             try:
-                self.spark.sql(f"USE CATALOG {self.catalog}")
+                self.spark.sql(f"USE CATALOG {catalog_name}")
             except ParseException:
-                self.spark.sql(f"USE {self.catalog}")
+                self.spark.sql(f"USE {catalog_name}")
 
     def cursor(self) -> SparkSessionCursor:
         try:

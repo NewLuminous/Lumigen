@@ -10,10 +10,11 @@ _logger = logging.getLogger(__name__)
 
 def timer_func(func):
     """A decorator that logs the execution time of a function."""
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        t1 = time.time()
+        t1 = time.perf_counter()
         result = func(*args, **kwargs)
-        t2 = time.time()
+        t2 = time.perf_counter()
         _logger.debug(f'{func.__name__}() executed in {(t2-t1):.6f}s')
         return result
     return wrapper
