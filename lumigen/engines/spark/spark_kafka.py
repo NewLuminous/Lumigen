@@ -97,15 +97,23 @@ class SparkKafkaCursor(SparkSessionCursor):
                 raise e
 
     def _subscribe(self, topics: t.List[str], stored_offsets: t.Optional[t.Dict[str, dict]] = None):
-        topic_pattern = '|'.join(f"({tn})" for tn in topics)
-
         default_kafka_config = {
             'bootstrap.servers': self._bootstrap_servers,
             #'group.id': self._group_id, # NOTE: Not using for now
         }
         kafka_config = merge_dicts(default_kafka_config, self._kafka_config)
         consumer_config = self._kafka_options_factory(self._starting_mode, kafka_config)
-        consumer_config["subscribePattern"] = topic_pattern
+
+        has_wildcards = any(any(c in tn for c in "*?+{}[]^$") for tn in topics)
+        if not has_wildcards:
+            consumer_config["subscribe"] = ",".join(topics)
+        else:
+            anchored_patterns = []
+            for tn in topics:
+                pattern = tn if tn.startswith("^") else f"^{tn}"
+                pattern = pattern if pattern.endswith("$") else f"{pattern}$"
+                anchored_patterns.append(f"({pattern})")
+            consumer_config["subscribePattern"] = "|".join(anchored_patterns)
 
         if stored_offsets:
             subscribed_topics = self.filter_topics(topics)
@@ -245,7 +253,7 @@ class SparkKafkaConnection(SparkSessionConnection):
     def get_admin(self) -> AdminClient:
         return self.admin
     
-    def ping(self, timeout: float = 1.0) -> None:
+    def ping(self, timeout: float = 10.0) -> None:
         try:
             future = self.admin.describe_cluster(request_timeout=timeout)
             cluster_metadata = future.result() 
